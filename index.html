@@ -7,7 +7,431 @@
 <link rel="stylesheet" href="css/styles.css">
 </head>
 <body><!DOCTYPE html>
+<html lang="es"><!DOCTYPE html>
 <html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Araguatos — ING3DRECO SAS</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════
+     HEADER
+══════════════════════════════════════════ -->
+<header>
+  <div class="hlogo">
+    <img src="logo.png" alt="ING3DRECO">
+    <div>
+      <div class="htitle">Proyecto <em>Araguatos</em></div>
+      <div class="hsub">ING3DRECO SAS · NIT 901580047-1</div>
+    </div>
+  </div>
+  <div class="hright">
+    <b id="hDate"></b>
+    Plan Parcial Mesitas · UAU 6
+    <span class="hconn loc" id="connBadge">Local</span>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════
+     NAV
+══════════════════════════════════════════ -->
+<nav>
+  <button class="tb on" onclick="sw('resumen',this)">📊 Resumen</button>
+  <button class="tb"    onclick="sw('lotes',this)">🗂 Lotes</button>
+  <button class="tb"    onclick="sw('precios',this)">💲 Precios</button>
+  <button class="tb"    onclick="sw('flujo',this)">📈 Flujo de Caja</button>
+  <button class="tb"    onclick="sw('venta',this)">🏡 Venta</button>
+  <button class="tb"    onclick="sw('vendedor',this)">👤 Vendedor</button>
+  <button class="tb"    onclick="sw('ingresos',this)">💰 Ingresos Reales</button>
+  <button class="tb"    onclick="sw('config',this)">⚙️ Config</button>
+</nav>
+
+<!-- ══════════════════════════════════════════
+     MAIN
+══════════════════════════════════════════ -->
+<main>
+
+<!-- ─── RESUMEN ─────────────────────────── -->
+<div id="tab-resumen" class="panel on">
+  <div id="kpiGrid" class="g4" style="margin-bottom:14px"></div>
+  <div class="g2">
+    <div class="card">
+      <div class="ct">Estructura de costos (M COP)</div>
+      <div id="costRows"></div>
+    </div>
+    <div class="card">
+      <div class="ct">Proyeccion de ingresos</div>
+      <div id="revRows"></div>
+    </div>
+  </div>
+  <div id="beBox" class="card"></div>
+  <div class="card">
+    <div class="ct">Estado de ventas</div>
+    <div id="salesSt"></div>
+  </div>
+</div>
+
+<!-- ─── LOTES ────────────────────────────── -->
+<div id="tab-lotes" class="panel">
+  <div class="card">
+    <div class="ch">
+      <div>
+        <div class="ct">Mapa de lotes</div>
+        <div id="lotSt" style="font-size:11px;color:var(--muted)"></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div id="stAvail" class="kpi" style="min-width:80px;padding:8px 12px"></div>
+        <div id="stApt"   class="kpi kg" style="min-width:80px;padding:8px 12px"></div>
+        <div id="stSold"  class="kpi kgr" style="min-width:80px;padding:8px 12px"></div>
+      </div>
+    </div>
+    <!-- Leyenda lotes -->
+    <div class="legend" style="margin-bottom:14px">
+      <div class="lgi"><div class="lgd" style="background:#B71C1C"></div>Premium</div>
+      <div class="lgi"><div class="lgd" style="background:#1A237E"></div>Plus</div>
+      <div class="lgi"><div class="lgd" style="background:#1B5E20"></div>Estándar</div>
+      <div class="lgi"><div class="lgd" style="background:#546E7A"></div>Uso Interno</div>
+      <div class="lgi"><div class="lgd" style="background:#4CAF50"></div>Vendido</div>
+      <div class="lgi"><div class="lgd" style="background:#FF9800"></div>Apartado</div>
+    </div>
+    <div id="lotGrid"></div>
+  </div>
+</div>
+
+<!-- ─── PRECIOS ───────────────────────────── -->
+<div id="tab-precios" class="panel">
+  <div class="card">
+    <div class="ct">Configuración de precios base</div>
+    <div class="g3" style="margin-bottom:16px">
+      <div>
+        <div class="slm"><span class="sll">Precio Estándar (M)</span><span class="slv" id="v_std"></span></div>
+        <input type="range" id="r_std" min="40" max="100" step="0.5" oninput="rPrecios()">
+      </div>
+      <div>
+        <div class="slm"><span class="sll">Precio Plus (M)</span><span class="slv" id="v_plu"></span></div>
+        <input type="range" id="r_plu" min="50" max="120" step="0.5" oninput="rPrecios()">
+      </div>
+      <div>
+        <div class="slm"><span class="sll">Descuento preventa</span><span class="slv" id="v_pv"></span></div>
+        <input type="range" id="r_pv" min="0" max="25" oninput="rPrecios()">
+        <div style="font-size:10px;color:var(--muted);margin-top:3px">Preventas usadas: <b id="pvCnt"></b></div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="ct">Tabla de precios por lote</div>
+    <div id="prTbl" class="tw"></div>
+  </div>
+  <div class="card">
+    <div class="ct">Proyección de ingresos por tipo</div>
+    <div id="revProj"></div>
+  </div>
+  <div class="card">
+    <div class="ct">Lotes premium (precio especial)</div>
+    <div id="premList"></div>
+  </div>
+</div>
+
+<!-- ─── FLUJO DE CAJA ─────────────────────── -->
+<div id="tab-flujo" class="panel">
+  <div class="card">
+    <div class="ct">Parámetros del modelo</div>
+    <div class="g2">
+      <div>
+        <div class="slm"><span class="sll">Velocidad de venta</span><span class="slv" id="v_vel"></span></div>
+        <input type="range" id="r_vel" min="1" max="6" oninput="rFlujo()">
+      </div>
+      <div>
+        <div class="slm"><span class="sll">Cuota inicial (% precio)</span><span class="slv" id="v_dnf"></span></div>
+        <input type="range" id="r_dnf" min="10" max="50" oninput="rFlujo()">
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="ct">Flujo mensual proyectado</div>
+    <div id="flujoC" class="cb"></div>
+  </div>
+  <div class="g4" id="flujoCards" style="margin-bottom:0"></div>
+  <div id="flujoAl" class="card" style="margin-top:12px"></div>
+  <div class="card" style="margin-top:12px">
+    <div class="ct">Flujo detallado mes a mes</div>
+    <div class="tw" id="flujoTbl"></div>
+  </div>
+</div>
+
+<!-- ─── VENTA ─────────────────────────────── -->
+<div id="tab-venta" class="panel">
+
+  <!-- Encabezado hero -->
+  <div class="hero" style="padding:18px 20px;text-align:left;display:flex;align-items:center;gap:16px;margin-bottom:14px">
+    <img src="logo.png" alt="" style="width:52px;height:52px">
+    <div>
+      <div class="hero-n">Proyecto <em>Araguatos</em></div>
+      <div class="hero-s">Plan Parcial Mesitas · UAU 6 · Florencia, Caquetá</div>
+    </div>
+    <div style="margin-left:auto;text-align:right">
+      <div id="cPBig" class="pbig"></div>
+      <div id="cPSub" style="font-size:11px;color:rgba(255,255,255,.65)"></div>
+    </div>
+  </div>
+
+  <!-- ══ PLANO INTERACTIVO ══ -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="ch" style="margin-bottom:8px">
+      <div class="ct" style="margin-bottom:0">🗺 Plano de lotes — haz clic para seleccionar</div>
+      <div style="font-size:10px;color:var(--muted)">Hover para detalles · Clic para simular financiación</div>
+    </div>
+
+    <!-- Leyenda del plano -->
+    <div class="map-legend">
+      <div class="map-legend-item"><div class="map-legend-dot" style="background:#B71C1C"></div>Premium disp.</div>
+      <div class="map-legend-item"><div class="map-legend-dot" style="background:#1A237E"></div>Plus disp.</div>
+      <div class="map-legend-item"><div class="map-legend-dot" style="background:#2E7D32"></div>Estándar disp.</div>
+      <div class="map-legend-item"><div class="map-legend-dot" style="background:#1B5E20"></div>Vendido</div>
+      <div class="map-legend-item"><div class="map-legend-dot" style="background:#BF360C"></div>Apartado</div>
+      <div class="map-legend-item"><div class="map-legend-dot" style="background:#37474F"></div>Uso interno</div>
+      <div class="map-legend-item"><div class="map-legend-dot" style="background:#F9A825;border:1px solid #555"></div>Seleccionado</div>
+    </div>
+
+    <!-- Mapa SVG -->
+    <div class="lot-map-wrap" id="lotMapWrap">
+      <div id="saleMapSvg"></div>
+      <div id="mapTooltip"></div>
+    </div>
+
+    <!-- Info del lote seleccionado -->
+    <div id="lpGrid"></div>
+  </div>
+
+  <!-- ══ SIMULADOR ══ -->
+  <div class="card">
+    <div class="ct">💰 Simulador de pago</div>
+
+    <!-- Cuota inicial slider -->
+    <div class="slw">
+      <div class="slm">
+        <span class="sll">% Cuota inicial</span>
+        <span class="slv" id="v_ci"></span>
+      </div>
+      <input type="range" id="r_ci" min="10" max="60" value="20" oninput="onCiSlider()">
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:2px">
+        <span>10%</span><span>20%</span><span>40%</span><span>60%</span>
+      </div>
+    </div>
+
+    <!-- Toggle contado / financiado -->
+    <div class="tgg">
+      <button class="tgb" id="btnC" onclick="setPay('cash')">💵 Contado</button>
+      <button class="tgb on" id="btnF" onclick="setPay('fin')">📅 Financiado</button>
+    </div>
+
+    <!-- SECCIÓN CONTADO -->
+    <div id="cashSec" style="display:none">
+      <div id="pvBadge"></div>
+      <div class="psm" id="cashSum"></div>
+    </div>
+
+    <!-- SECCIÓN FINANCIADO -->
+    <div id="finSec">
+      <div class="ct">Plazo (máx. 54 meses)</div>
+      <div class="rbtns">
+        <button class="rb" onclick="sPlazo(12,this)">12m</button>
+        <button class="rb" onclick="sPlazo(18,this)">18m</button>
+        <button class="rb" onclick="sPlazo(24,this)">24m</button>
+        <button class="rb on" onclick="sPlazo(36,this)">36m</button>
+        <button class="rb" onclick="sPlazo(48,this)">48m</button>
+        <button class="rb" onclick="sPlazo(54,this)">54m</button>
+      </div>
+
+      <!-- Inputs manuales en pesos COP completos -->
+      <div class="pay-grid">
+        <div class="pay-field">
+          <label>💵 Cuota inicial (en pesos)</label>
+          <input type="number" id="ci_manual" min="0" step="1000000"
+            placeholder="Ej: 12000000" oninput="onCiManual()">
+          <div class="hint">Puedes ingresar el valor completo en pesos o en millones. Ej: 12000000 ó 12</div>
+        </div>
+        <div class="pay-field">
+          <label>📆 Cuota mensual (en pesos)</label>
+          <input type="number" id="cm_manual" min="0" step="100000"
+            placeholder="Ej: 1500000" oninput="onCmManual()">
+          <div class="hint">Define el monto mensual para calcular el plazo automáticamente. Máx. 54 meses.</div>
+        </div>
+      </div>
+
+      <!-- Alerta de 54 meses -->
+      <div id="finAlert"></div>
+    </div>
+  </div>
+
+  <!-- ══ RESUMEN DE PAGO ══ -->
+  <div id="sumCard" style="display:none">
+    <div class="card">
+      <div class="ct">Resumen financiero</div>
+      <div id="pvBadge2"></div>
+      <div class="psm" id="pmtSum"></div>
+    </div>
+    <div class="card" id="finPlan">
+      <div class="ch">
+        <div class="ct" style="margin:0">Plan de pagos</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn bsm bout" onclick="cpPlan()">📋 Copiar</button>
+          <button class="btn bsm bg"  onclick="pPlan()">🖨 Imprimir</button>
+        </div>
+      </div>
+      <div class="pmw" id="pmtTbl"></div>
+    </div>
+    <div style="padding:4px 0 8px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn bg" onclick="oSale()">✅ Registrar venta / apartar</button>
+    </div>
+  </div>
+
+</div><!-- /tab-venta -->
+
+<!-- ─── VENDEDOR ──────────────────────────── -->
+<div id="tab-vendedor" class="panel">
+  <div class="card">
+    <div class="ct">Modelo de comisiones</div>
+    <div class="g3" style="margin-bottom:14px">
+      <div>
+        <div class="slm"><span class="sll">Velocidad de venta</span><span class="slv" id="v_vv"></span></div>
+        <input type="range" id="r_vv" min="1" max="6" oninput="rVend()">
+      </div>
+      <div>
+        <div class="slm"><span class="sll">% Cuota inicial</span><span class="slv" id="v_vci"></span></div>
+        <input type="range" id="r_vci" min="10" max="50" oninput="rVend()">
+      </div>
+      <div>
+        <div class="slm"><span class="sll">Plazo financiación</span><span class="slv" id="v_vpl"></span></div>
+        <input type="range" id="r_vpl" min="12" max="54" oninput="rVend()">
+      </div>
+    </div>
+  </div>
+  <div class="g4" id="vKPIs" style="margin-bottom:12px"></div>
+  <div class="card">
+    <div class="ct">Gráfico de comisiones acumuladas</div>
+    <div id="vendC" class="cb"></div>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <div class="ct">Detalle mes a mes</div>
+    <div class="tw" id="vendTbl"></div>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <div class="ch">
+      <div class="ct" style="margin:0">Ventas registradas</div>
+    </div>
+    <div id="salesReg"></div>
+  </div>
+</div>
+
+<!-- ─── INGRESOS REALES ───────────────────── -->
+<div id="tab-ingresos" class="panel">
+  <div class="g4" id="ingresosKPIs" style="margin-bottom:12px"></div>
+  <div class="card">
+    <div class="ct">Ingresos reales vs. proyectados</div>
+    <div id="ingresosChart" class="cb"></div>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <div class="ct">Detalle por venta</div>
+    <div class="tw" id="ingresosTbl"></div>
+  </div>
+</div>
+
+<!-- ─── CONFIG ────────────────────────────── -->
+<div id="tab-config" class="panel">
+  <div class="card">
+    <div class="ct">Sincronización Supabase</div>
+    <label class="fl">URL del proyecto Supabase</label>
+    <input type="text" id="cfg_url" placeholder="https://xxxx.supabase.co">
+    <label class="fl">API Key (anon)</label>
+    <input type="text" id="cfg_key" placeholder="eyJhb...">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <button class="btn bg" onclick="connectSB()">🔗 Conectar y subir datos</button>
+      <button class="btn bout" onclick="pullFromSupabase()">⬇ Descargar desde Supabase</button>
+    </div>
+    <div id="connStatus"></div>
+  </div>
+  <div class="card">
+    <div class="ct">Datos locales</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn bred bsm" onclick="if(confirm('¿Resetear TODO? Se pierden todas las ventas.')) { localStorage.clear(); location.reload(); }">🗑 Resetear datos</button>
+      <button class="btn bout bsm" onclick="var d=JSON.stringify(S,null,2);var b=new Blob([d],{type:'application/json'});var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='araguatos_backup.json';a.click()">💾 Exportar JSON</button>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<!-- ══════════════════════════════════════════
+     MODALES
+══════════════════════════════════════════ -->
+
+<!-- Modal editar lote -->
+<div id="lotMod" class="ov" style="display:none" onclick="cLotM(event)">
+  <div class="modal">
+    <div class="mt">
+      <span id="lmT">Editar lote</span>
+      <button class="mc" onclick="cLotM()">✕</button>
+    </div>
+    <div id="lmB"></div>
+    <div style="display:flex;gap:10px;margin-top:4px">
+      <button class="btn bg" style="flex:1" onclick="savLot()">✅ Guardar cambios</button>
+      <button class="btn bout" onclick="cLotM()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal registrar venta -->
+<div id="saleMod" class="ov" style="display:none" onclick="cSaleM(event)">
+  <div class="modal">
+    <div class="mt">
+      <span>Registrar venta / apartar</span>
+      <button class="mc" onclick="cSaleM()">✕</button>
+    </div>
+    <div id="smB"></div>
+    <div style="display:flex;gap:10px;margin-top:4px">
+      <button class="btn bg" style="flex:1" onclick="savSale()">✅ Confirmar</button>
+      <button class="btn bout" onclick="cSaleM()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal minuta -->
+<div id="minMod" class="ov" style="display:none" onclick="cMin(event)">
+  <div class="modal modal-lg">
+    <div class="mt">
+      <span>Minuta de compromiso</span>
+      <button class="mc" onclick="cMin()">✕</button>
+    </div>
+    <div id="minB" class="mnb"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <button class="btn bg"  onclick="pMin()">🖨 Imprimir</button>
+      <button class="btn bout" onclick="cMin()">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SCRIPTS
+══════════════════════════════════════════ -->
+<script src="js/data.js"></script>
+<script src="js/minuta.js"></script>
+<script src="js/tab-resumen.js"></script>
+<script src="js/tab-lotes.js"></script>
+<script src="js/tab-precios.js"></script>
+<script src="js/tab-flujo.js"></script>
+<script src="js/tab-venta.js"></script>
+<script src="js/tab-vendedor.js"></script>
+<script src="js/tab-ingresos.js"></script>
+<script src="js/tab-config.js"></script>
+<script src="js/main.js"></script>
+
+</body>
+</html>
+
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
