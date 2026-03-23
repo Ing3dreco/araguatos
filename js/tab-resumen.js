@@ -29,11 +29,8 @@ function rResumen() {
   }).join('');
 
   /* ── Costos ── */
-  var prem = sale.filter(function(l){ return l.type==='premium'; });
   var plus = sale.filter(function(l){ return l.type==='plus'; });
   var std  = sale.filter(function(l){ return l.type==='standard'; });
-  var premR= 0; prem.forEach(function(l){ premR += lp(l); });
-
   var cEl = document.getElementById('costRows');
   if (cEl) cEl.innerHTML = [
     ['Terreno (contrato)',         fM(1200),            'vr'],
@@ -48,7 +45,7 @@ function rResumen() {
   /* ── Ingresos ── */
   var rEl = document.getElementById('revRows');
   if (rEl) rEl.innerHTML = [
-    [prem.length+' lotes premium',    fM(premR),                  'vg'],
+    /*[prem.length+' lotes premium',    fM(premR),                  'vg'],*/
     [plus.length+' lotes plus',       fM(plus.length*S.cfg.plu),  'vg'],
     [std.length+' lotes estándar',    fM(std.length*S.cfg.std),   'vg'],
     ['Ingresos brutos',               '<b>'+fM(gRev)+'</b>',      'vg'],
