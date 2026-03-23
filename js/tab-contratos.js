@@ -173,7 +173,11 @@ async function ctGenDoc(){
     };
     for(var k in rep)xml=xml.split(k).join(rep[k]);
     zip.file('word/document.xml',xml);
-    var blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
+    var blob = await zip.generateAsync({
+  type: 'blob',
+  compression: 'DEFLATE',
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+});
     var url=URL.createObjectURL(blob),a=document.createElement('a');
     a.href=url;a.download='Contrato_Lote_'+l.id+'_'+new Date().toISOString().slice(0,10)+'.docx';
     document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
