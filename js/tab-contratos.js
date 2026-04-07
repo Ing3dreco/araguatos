@@ -63,7 +63,7 @@ function rContratos(){
 function ctRenderList(){
   var q=(document.getElementById('ctSearch')?document.getElementById('ctSearch').value:'').toLowerCase();
   var listEl=document.getElementById('ctList');if(!listEl)return;listEl.innerHTML='';
-  var mzs=['A','B','C','D'],total=0,done=0;
+  var mzs=['A','B','C','D','E'],total=0,done=0;
   mzs.forEach(function(mz){
     var mzLots=S.lots.filter(function(l){return l.m===mz;}).sort(function(a,b){return a.n-b.n;});
     var fil=mzLots.filter(function(l){return !q||l.id.toLowerCase().includes(q);});
