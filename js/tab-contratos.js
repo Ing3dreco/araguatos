@@ -32,7 +32,7 @@ function pushLinderos(){
 }
 function pullLinderos(){
   if(typeof SB_CONNECTED==='undefined'||!SB_CONNECTED||!SB_URL||!SB_KEY)return;
-  fetch(SB_URL+'/rest/v1/lot_linderos?select=*',{headers:sbH()}).then(function(r){return r.json();}).then(function(data){if(!Array.isArray(data))return;data.forEach(function(row){cLinderos[row.lot_id]={nD:row.n_dist,nX:row.n_desc,sD:row.s_dist,sX:row.s_desc,eD:row.e_dist,eX:row.e_desc,oD:row.o_dist,oX:row.o_desc};});localStorage.setItem('araguatos_linderos',JSON.stringify(cLinderos));ctRenderList();}).catch(function(){});/* FIX BUG-1: era rContratos() → bucle infinito */
+  fetch(SB_URL+'/rest/v1/lots?select=*',{headers:sbH()}).then(function(r){return r.json();}).then(function(data){if(!Array.isArray(data))return;data.forEach(function(row){cLinderos[row.lot_id]={nD:row.n_dist,nX:row.n_desc,sD:row.s_dist,sX:row.s_desc,eD:row.e_dist,eX:row.e_desc,oD:row.o_dist,oX:row.o_desc};});localStorage.setItem('araguatos_linderos',JSON.stringify(cLinderos));ctRenderList();}).catch(function(){});/* FIX BUG-1: era rContratos() → bucle infinito */
 }
 function getLind(id){return cLinderos[id]||{nD:'',nX:'',sD:'',sX:'',eD:'',eX:'',oD:'',oX:''};}
 var cActiveLotId=null;
