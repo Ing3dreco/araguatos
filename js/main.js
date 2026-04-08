@@ -79,9 +79,7 @@ fetch(u + '/rest/v1/lots?select=*&order=m,n', {
 }).then(function(r){ return r.json(); })
 .then(function(data){
   if (!Array.isArray(data) || data.length===0) return;
-
-  /* ── FIX: usar S.lots (ya cargado desde localStorage con IDs
-     correctos) en lugar de reconstruir desde buildLots() ── */
+  /* ── FIX: igual que pullFromSupabase, usar S.lots como base ── */
   data.forEach(function(row){
     var l = S.lots.find(function(x){ return x.id===row.id; });
     if (!l) return;
@@ -93,8 +91,6 @@ fetch(u + '/rest/v1/lots?select=*&order=m,n', {
     l.saleDate=row.sale_date||null; l.salePrice=row.sale_price||null;
     l.saleMonthIdx=row.sale_month_idx||0; l.obs=row.obs||'';
   });
-  /* ── Ya NO se hace S.lots = base ── */
-
   SB_CONNECTED = true;
   updateConnUI();
   saveS();
