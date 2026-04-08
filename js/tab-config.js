@@ -223,13 +223,13 @@ S.lots = data.map(function(row) {
     saleMonthIdx: row.sale_month_idx || 0,
     obs:          row.obs          || ''
   };
+   });
     saveS();
     if (typeof pullLinderos === 'function') pullLinderos();
     rAll();
     setConnStatus('ok', 'OK: ' + data.length + ' lotes cargados desde Supabase.');
   }).catch(function(e) { setConnStatus('error', 'Error: ' + e.message); });
 }
- 
 function syncLot(l) {
   if (!SB_CONNECTED || !SB_URL || !SB_KEY) return;
   fetch(SB_URL + '/rest/v1/lots', {
