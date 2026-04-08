@@ -64,7 +64,7 @@ function sbRefresh(rt) {
       onAuthSuccess();
     } else { showLogin(); }
   }).catch(function() { showLogin(); });
-}
+})
  
 /* Renovación automática 60s antes de expirar */
 function scheduleRefresh(expiresInSeconds) {
