@@ -2,13 +2,14 @@
    tab-config.js  — Supabase + Auth
    Credenciales hardcodeadas — login obligatorio
 ═══════════════════════════════════════════════════ */
-
+ 
 /* ── Credenciales ──────────────────────────────── */
 var SB_URL = 'https://ninaxwddpqqgaflacdfm.supabase.co';
 var SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5pbmF4d2RkcHFxZ2FmbGFjZGZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxNTU3MjMsImV4cCI6MjA4OTczMTcyM30.mBmOXS8fi-WYuw0FeRcMBUpruKsW9JnKZHcGLd1zrkQ';
 var SB_CONNECTED = false;
 var SB_TOKEN = '';   /* JWT del usuario autenticado */
-
+var _refreshTimer = null;
+ 
 /* ── Helper de headers ─────────────────────────── */
 function sbH(extra) {
   var h = {
@@ -18,11 +19,11 @@ function sbH(extra) {
   if (extra) { for (var k in extra) h[k] = extra[k]; }
   return h;
 }
-
+ 
 /* ════════════════════════════════════════════════
    AUTH
 ═══════════════════════════════════════════════════ */
-
+ 
 /* Arranque: revisa sesion guardada */
 function initAuth() {
   var raw = localStorage.getItem('araguatos_session');
@@ -33,6 +34,7 @@ function initAuth() {
       var now = Math.floor(Date.now() / 1000);
       if (sess.expires_at && sess.expires_at > now + 60) {
         SB_TOKEN = sess.access_token;
+        scheduleRefresh(sess.expires_at - now);
         onAuthSuccess();
       } else {
         sbRefresh(sess.refresh_token);
@@ -40,7 +42,7 @@ function initAuth() {
     } else { showLogin(); }
   } catch (e) { showLogin(); }
 }
-
+ 
 /* Renovar token */
 function sbRefresh(rt) {
   if (!rt) { showLogin(); return; }
@@ -52,16 +54,32 @@ function sbRefresh(rt) {
   .then(function(d) {
     if (d.access_token) {
       SB_TOKEN = d.access_token;
+      var expiresIn = d.expires_in || 3600;
       localStorage.setItem('araguatos_session', JSON.stringify({
         access_token: d.access_token,
         refresh_token: d.refresh_token || rt,
-        expires_at: Math.floor(Date.now() / 1000) + (d.expires_in || 3600)
+        expires_at: Math.floor(Date.now() / 1000) + expiresIn
       }));
+      scheduleRefresh(expiresIn);
       onAuthSuccess();
     } else { showLogin(); }
   }).catch(function() { showLogin(); });
 }
-
+ 
+/* Renovación automática 60s antes de expirar */
+function scheduleRefresh(expiresInSeconds) {
+  clearTimeout(_refreshTimer);
+  var delay = Math.max((expiresInSeconds - 60) * 1000, 10000);
+  _refreshTimer = setTimeout(function() {
+    var raw = localStorage.getItem('araguatos_session');
+    if (!raw) return;
+    try {
+      var sess = JSON.parse(raw);
+      if (sess && sess.refresh_token) sbRefresh(sess.refresh_token);
+    } catch(e) {}
+  }, delay);
+}
+ 
 /* Boton Ingresar */
 function doLogin() {
   var emailEl = G('loginEmail'), passEl = G('loginPass');
@@ -74,7 +92,7 @@ function doLogin() {
   }
   if (btnEl) { btnEl.textContent = 'Ingresando...'; btnEl.disabled = true; }
   if (errEl) errEl.textContent = '';
-
+ 
   fetch(SB_URL + '/auth/v1/token?grant_type=password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY },
@@ -99,7 +117,7 @@ function doLogin() {
     if (btnEl) { btnEl.textContent = 'Ingresar'; btnEl.disabled = false; }
   });
 }
-
+ 
 /* Login exitoso */
 function onAuthSuccess() {
   var ov = G('loginOverlay');
@@ -108,12 +126,12 @@ function onAuthSuccess() {
   updateConnUI();
   pullFromSupabase();
 }
-
+ 
 function showLogin() {
   var ov = G('loginOverlay');
   if (ov) ov.style.display = 'flex';
 }
-
+ 
 function doLogout() {
   if (!confirm('Cerrar sesion?')) return;
   if (SB_TOKEN) {
@@ -123,13 +141,13 @@ function doLogout() {
   SB_TOKEN = ''; SB_CONNECTED = false;
   location.reload();
 }
-
+ 
 function initConfigPanel() {}
-
+ 
 /* ════════════════════════════════════════════════
    SUPABASE - DATOS
 ═══════════════════════════════════════════════════ */
-
+ 
 function connectSupabase() {
   setConnStatus('info', 'Verificando conexion...');
   fetch(SB_URL + '/rest/v1/lots?limit=1', { headers: sbH() })
@@ -138,7 +156,7 @@ function connectSupabase() {
     pushToSupabase();
   }).catch(function(e) { setConnStatus('error', 'Error: ' + e.message); });
 }
-
+ 
 function pushToSupabase() {
   if (!SB_URL || !SB_KEY) return;
   var payload = S.lots.map(function(l) {
@@ -166,7 +184,7 @@ function pushToSupabase() {
     }
   }).catch(function(e) { setConnStatus('error', 'Red: ' + e.message); });
 }
-
+ 
 function pullFromSupabase() {
   if (!SB_URL || !SB_KEY) return;
   fetch(SB_URL + '/rest/v1/lots?select=*&order=m,n', { headers: sbH() })
@@ -196,7 +214,7 @@ function pullFromSupabase() {
     setConnStatus('ok', 'OK: ' + data.length + ' lotes cargados desde Supabase.');
   }).catch(function(e) { setConnStatus('error', 'Error: ' + e.message); });
 }
-
+ 
 function syncLot(l) {
   if (!SB_CONNECTED || !SB_URL || !SB_KEY) return;
   fetch(SB_URL + '/rest/v1/lots', {
@@ -213,7 +231,7 @@ function syncLot(l) {
     }])
   }).catch(function() {});
 }
-
+ 
 /* ════════════════════════════════════════════════
    UI
 ═══════════════════════════════════════════════════ */
@@ -222,13 +240,13 @@ function setConnStatus(type, msg) {
   var cls = { ok: 'al-ok', warn: 'al-w', info: 'al-i', error: 'al-r' }[type] || 'al-i';
   el.innerHTML = '<div class="al ' + cls + '">' + msg + '</div>';
 }
-
+ 
 function updateConnUI() {
   var el = G('hConn'); if (!el) return;
   if (SB_CONNECTED) { el.textContent = 'Supabase'; el.className = 'hconn ok'; }
   else              { el.textContent = 'Local';    el.className = 'hconn loc'; }
 }
-
+ 
 function exportJSON() {
   var blob = new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' });
   var a = document.createElement('a');
@@ -236,7 +254,7 @@ function exportJSON() {
   a.download = 'araguatos_backup_' + new Date().toISOString().slice(0, 10) + '.json';
   a.click();
 }
-
+ 
 function exportExcel() {
   var sold = S.lots.filter(function(l) { return l.status === 'sold' || l.status === 'apartado'; });
   var hdr = 'Lote,Manzana,Area m2,Tipo,Estado,Comprador,Cedula,Telefono,Precio M,Modalidad,CI M,CM M,Plazo,Fecha\n';
@@ -254,7 +272,7 @@ function exportExcel() {
   a.download = 'araguatos_ventas_' + new Date().toISOString().slice(0, 10) + '.csv';
   a.click();
 }
-
+ 
 function clearLocal() {
   if (!confirm('Borrar TODOS los datos locales? (Supabase no se modifica)')) return;
   localStorage.removeItem('araguatos_v6');
@@ -263,7 +281,7 @@ function clearLocal() {
   S = defS(); saveS(); rAll();
   setConnStatus('ok', 'OK: Datos locales borrados y restaurados por defecto.');
 }
-
+ 
 /* ── Arrancar auth al cargar ───────────────────── */
 document.addEventListener('DOMContentLoaded', function() {
   initAuth();
