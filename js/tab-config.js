@@ -195,9 +195,11 @@ function pullFromSupabase() {
     if (!Array.isArray(data) || !data.length) {
       pushToSupabase(); return;
     }
-    var base = buildLots();
+    /* ── FIX: usar S.lots (localStorage) como base en lugar de
+       buildLots() — así se respetan los IDs modificados ────── */
     data.forEach(function(row) {
-      var l = base.find(function(x) { return x.id === row.id; }); if (!l) return;
+      var l = S.lots.find(function(x) { return x.id === row.id; });
+      if (!l) return;
       l.type = row.type || l.type; l.area = row.area || l.area; l.fp = row.fp || null;
       l.status = row.status || l.status; l.buyer = row.buyer || '';
       l.cc = row.cc || ''; l.phone = row.phone || '';
@@ -207,8 +209,8 @@ function pullFromSupabase() {
       l.saleDate = row.sale_date || null; l.salePrice = row.sale_price || null;
       l.saleMonthIdx = row.sale_month_idx || 0; l.obs = row.obs || '';
     });
-    S.lots = base;
-    localStorage.setItem('araguatos_v6', JSON.stringify(S));
+    /* ── Ya NO se hace S.lots = base ni se sobreescribe con buildLots ── */
+    saveS();
     if (typeof pullLinderos === 'function') pullLinderos();
     rAll();
     setConnStatus('ok', 'OK: ' + data.length + ' lotes cargados desde Supabase.');
