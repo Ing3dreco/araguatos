@@ -108,3 +108,10 @@ data.forEach(function(row){
   rResumen();
   updateVendidosUI();
 });
+/* ── Auto-sync cada 20 segundos ──────────────── */
+setInterval(function() {
+  if (typeof SB_CONNECTED !== 'undefined' && SB_CONNECTED &&
+      typeof pullFromSupabase === 'function') {
+    pullFromSupabase();
+  }
+}, 20000); // ← 20000ms = 1 minuto (ajusta a gusto)
