@@ -107,6 +107,8 @@ function oLot(id) {
     ? '<div class="al al-i" style="margin-bottom:10px;font-size:11px">🏢 Lote de uso interno — puede tener estado, precio y datos de propietario.</div>' : '';
 
   G('lmB').innerHTML = intNote
+    + '<label class="fl">Número de lote</label>'
+    + '<input type="number" id="m_n" value="'+l.n+'" min="1" max="99" step="1">'
     + '<label class="fl">Tipo</label><select id="m_t">'+tOpts+'</select>'
     + '<label class="fl">Área (m²) — acepta decimales</label>'
     + '<input type="number" id="m_a" value="'+l.area+'" min="50" max="500" step="0.01">'
@@ -126,6 +128,21 @@ function oLot(id) {
 function savLot() {
   var l = S.lots.find(function(x){ return x.id===eLotId; });
   if (!l) return;
+
+  var newN  = parseInt(G('m_n').value) || l.n;
+  var pad   = newN < 10 ? '0'+newN : ''+newN;
+  var newId = l.m + pad;
+
+  var dup = S.lots.find(function(x){ return x.id===newId && x.id!==eLotId; });
+  if (dup) { alert('Ya existe el lote '+newId+'. Elige otro número.'); return; }
+
+  if (newId !== eLotId) {
+    if (S.payments) S.payments.forEach(function(p){ if(p.lotId===eLotId) p.lotId=newId; });
+    if (S.reservas) S.reservas.forEach(function(r){ if(r.lotId===eLotId) r.lotId=newId; });
+  }
+
+  l.n      = newN;
+  l.id     = newId;
   l.type   = G('m_t').value;
   l.area   = parseFloat(G('m_a').value) || 98;
   var fp2  = parseFloat(G('m_p').value);
