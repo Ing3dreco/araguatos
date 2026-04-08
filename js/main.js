@@ -106,7 +106,6 @@ S.lots = data.map(function(row) {
     saleMonthIdx: row.sale_month_idx || 0,
     obs:          row.obs          || ''
   };
-});
   SB_CONNECTED = true;
   updateConnUI();
   saveS();
@@ -119,11 +118,12 @@ S.lots = data.map(function(row) {
   setPay('fin');
   rResumen();
   updateVendidosUI();
-});
 /* ── Auto-sync cada 20 segundos ──────────────── */
 setInterval(function() {
   if (typeof SB_CONNECTED !== 'undefined' && SB_CONNECTED &&
       typeof pullFromSupabase === 'function') {
     pullFromSupabase();
   }
-}, 20000); // ← 20000ms = 1 minuto (ajusta a gusto)
+}, 20000); // ← 20000ms = 1 minuto (ajusta a gusto)     
+});
+
