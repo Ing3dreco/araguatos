@@ -80,9 +80,13 @@ fetch(u + '/rest/v1/lots?select=*&order=m,n', {
 .then(function(data){
   if (!Array.isArray(data) || data.length===0) return;
   /* ── FIX: igual que pullFromSupabase, usar S.lots como base ── */
-  data.forEach(function(row){
-    var l = S.lots.find(function(x){ return x.id===row.id; });
-    if (!l) return;
+data.forEach(function(row){
+  var l = S.lots.find(function(x){ return x.id===row.id; });
+  if (!l) {
+    l = S.lots.find(function(x){ return x.m===row.m && x.n===row.n; });
+    if (l) l.id = row.id;
+  }
+  if (!l) return;
     l.type=row.type||l.type; l.area=row.area||l.area; l.fp=row.fp||null;
     l.status=row.status||l.status; l.buyer=row.buyer||''; l.cc=row.cc||'';
     l.phone=row.phone||''; l.email=row.email||''; l.addr=row.addr||'';
