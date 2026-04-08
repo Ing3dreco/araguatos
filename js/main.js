@@ -79,9 +79,6 @@ fetch(u + '/rest/v1/lots?select=*&order=m,n', {
 }).then(function(r){ return r.json(); })
 .then(function(data){
   if (!Array.isArray(data) || data.length===0) return;
-  /* ── FIX: igual que pullFromSupabase, usar S.lots como base ── */
-data.forEach(function(row){
-  // Supabase manda — reemplazar S.lots completamente
 var base = buildLots(); // solo para valores por defecto si faltan campos
 S.lots = data.map(function(row) {
   var def = base.find(function(x){ return x.m===row.m && x.n===row.n; }) || {};
