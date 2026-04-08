@@ -197,9 +197,14 @@ function pullFromSupabase() {
     }
     /* ── FIX: usar S.lots (localStorage) como base en lugar de
        buildLots() — así se respetan los IDs modificados ────── */
-    data.forEach(function(row) {
-      var l = S.lots.find(function(x) { return x.id === row.id; });
-      if (!l) return;
+data.forEach(function(row) {
+  var l = S.lots.find(function(x) { return x.id === row.id; });
+  if (!l) {
+    // Fallback: buscar por manzana + número para capturar lotes renombrados
+    l = S.lots.find(function(x) { return x.m === row.m && x.n === row.n; });
+    if (l) l.id = row.id; // actualizar el ID local al nuevo
+  }
+  if (!l) return;
       l.type = row.type || l.type; l.area = row.area || l.area; l.fp = row.fp || null;
       l.status = row.status || l.status; l.buyer = row.buyer || '';
       l.cc = row.cc || ''; l.phone = row.phone || '';
