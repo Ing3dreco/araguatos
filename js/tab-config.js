@@ -183,8 +183,7 @@ function pushToSupabase() {
       r.text().then(function(t) { setConnStatus('error', 'Error: ' + t); });
     }
   }).catch(function(e) { setConnStatus('error', 'Red: ' + e.message); });
-}
- 
+   
 function pullFromSupabase() {
   if (!SB_URL || !SB_KEY) return;
   fetch(SB_URL + '/rest/v1/lots?select=*&order=m,n', { headers: sbH() })
