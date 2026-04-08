@@ -106,6 +106,7 @@ S.lots = data.map(function(row) {
     saleMonthIdx: row.sale_month_idx || 0,
     obs:          row.obs          || ''
   };
+});
   SB_CONNECTED = true;
   updateConnUI();
   saveS();
@@ -113,7 +114,6 @@ S.lots = data.map(function(row) {
   updateVendidosUI();
 }).catch(function(){ /* silencioso */ });
   }
-
   /* Render inicial */
   setPay('fin');
   rResumen();
