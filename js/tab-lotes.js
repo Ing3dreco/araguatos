@@ -136,24 +136,31 @@ function savLot() {
   var dup = S.lots.find(function(x){ return x.id===newId && x.id!==eLotId; });
   if (dup) { alert('Ya existe el lote '+newId+'. Elige otro número.'); return; }
 
-  if (newId !== eLotId) {
-    if (S.payments) S.payments.forEach(function(p){ if(p.lotId===eLotId) p.lotId=newId; });
-    if (S.reservas) S.reservas.forEach(function(r){ if(r.lotId===eLotId) r.lotId=newId; });
+if (newId !== eLotId) {
+  if (S.payments) S.payments.forEach(function(p){ if(p.lotId===eLotId) p.lotId=newId; });
+  if (S.reservas) S.reservas.forEach(function(r){ if(r.lotId===eLotId) r.lotId=newId; });
 
-    /* ── Migrar linderos al nuevo id ─────────────────────── */
-    if (typeof cLinderos !== 'undefined') {
-      if (cLinderos[eLotId]) {
-        cLinderos[newId] = cLinderos[eLotId];
-        delete cLinderos[eLotId];
-        saveLinderos(); /* guarda localStorage + dispara push a Supabase */
-      }
+  if (typeof cLinderos !== 'undefined') {
+    if (cLinderos[eLotId]) {
+      cLinderos[newId] = cLinderos[eLotId];
+      delete cLinderos[eLotId];
+      saveLinderos();
     }
-    /* ── Actualizar lote activo en contratos si coincide ─── */
-    if (typeof cActiveLotId !== 'undefined' && cActiveLotId === eLotId) {
-      cActiveLotId = newId;
-    }
-    /* ───────────────────────────────────────────────────── */
   }
+  if (typeof cActiveLotId !== 'undefined' && cActiveLotId === eLotId) {
+    cActiveLotId = newId;
+  }
+
+  /* ── FIX: borrar el registro viejo en Supabase para que no
+     reaparezca el ID anterior en el próximo pull ────────── */
+  if (typeof SB_CONNECTED !== 'undefined' && SB_CONNECTED && SB_URL && SB_KEY) {
+    fetch(SB_URL + '/rest/v1/lots?id=eq.' + eLotId, {
+      method: 'DELETE',
+      headers: { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY }
+    }).catch(function(){});
+  }
+  /* ─────────────────────────────────────────────────────── */
+}
 
   l.n      = newN;
   l.id     = newId;
