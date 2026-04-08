@@ -81,20 +81,35 @@ fetch(u + '/rest/v1/lots?select=*&order=m,n', {
   if (!Array.isArray(data) || data.length===0) return;
   /* ── FIX: igual que pullFromSupabase, usar S.lots como base ── */
 data.forEach(function(row){
-  var l = S.lots.find(function(x){ return x.id===row.id; });
-  if (!l) {
-    l = S.lots.find(function(x){ return x.m===row.m && x.n===row.n; });
-    if (l) l.id = row.id;
-  }
-  if (!l) return;
-    l.type=row.type||l.type; l.area=row.area||l.area; l.fp=row.fp||null;
-    l.status=row.status||l.status; l.buyer=row.buyer||''; l.cc=row.cc||'';
-    l.phone=row.phone||''; l.email=row.email||''; l.addr=row.addr||'';
-    l.payType=row.pay_type||'fin'; l.dn=row.dn||20; l.mo=row.mo||36;
-    l.dnAmt=row.dn_amt||0; l.cmAmt=row.cm_amt||0; l.pv=row.pv||false;
-    l.saleDate=row.sale_date||null; l.salePrice=row.sale_price||null;
-    l.saleMonthIdx=row.sale_month_idx||0; l.obs=row.obs||'';
-  });
+  // Supabase manda — reemplazar S.lots completamente
+var base = buildLots(); // solo para valores por defecto si faltan campos
+S.lots = data.map(function(row) {
+  var def = base.find(function(x){ return x.m===row.m && x.n===row.n; }) || {};
+  return {
+    id:           row.id,
+    m:            row.m,
+    n:            row.n,
+    type:         row.type         || def.type    || 'standard',
+    area:         row.area         || def.area    || 98,
+    fp:           row.fp           || null,
+    status:       row.status       || 'available',
+    buyer:        row.buyer        || '',
+    cc:           row.cc           || '',
+    phone:        row.phone        || '',
+    email:        row.email        || '',
+    addr:         row.addr         || '',
+    payType:      row.pay_type     || 'fin',
+    dn:           row.dn           || 20,
+    mo:           row.mo           || 36,
+    dnAmt:        row.dn_amt       || 0,
+    cmAmt:        row.cm_amt       || 0,
+    pv:           row.pv           || false,
+    saleDate:     row.sale_date    || null,
+    salePrice:    row.sale_price   || null,
+    saleMonthIdx: row.sale_month_idx || 0,
+    obs:          row.obs          || ''
+  };
+});
   SB_CONNECTED = true;
   updateConnUI();
   saveS();
