@@ -195,9 +195,6 @@ function pullFromSupabase() {
     if (!Array.isArray(data) || !data.length) {
       pushToSupabase(); return;
     }
-    /* ── FIX: usar S.lots (localStorage) como base en lugar de
-       buildLots() — así se respetan los IDs modificados ────── */
-data.forEach(function(row) {
 // Supabase manda — reemplazar S.lots completamente
 var base = buildLots(); // solo para valores por defecto si faltan campos
 S.lots = data.map(function(row) {
