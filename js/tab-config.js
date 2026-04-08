@@ -223,7 +223,6 @@ S.lots = data.map(function(row) {
     saleMonthIdx: row.sale_month_idx || 0,
     obs:          row.obs          || ''
   };
-});
     saveS();
     if (typeof pullLinderos === 'function') pullLinderos();
     rAll();
