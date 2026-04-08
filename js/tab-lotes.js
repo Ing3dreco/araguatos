@@ -139,6 +139,20 @@ function savLot() {
   if (newId !== eLotId) {
     if (S.payments) S.payments.forEach(function(p){ if(p.lotId===eLotId) p.lotId=newId; });
     if (S.reservas) S.reservas.forEach(function(r){ if(r.lotId===eLotId) r.lotId=newId; });
+
+    /* ── Migrar linderos al nuevo id ─────────────────────── */
+    if (typeof cLinderos !== 'undefined') {
+      if (cLinderos[eLotId]) {
+        cLinderos[newId] = cLinderos[eLotId];
+        delete cLinderos[eLotId];
+        saveLinderos(); /* guarda localStorage + dispara push a Supabase */
+      }
+    }
+    /* ── Actualizar lote activo en contratos si coincide ─── */
+    if (typeof cActiveLotId !== 'undefined' && cActiveLotId === eLotId) {
+      cActiveLotId = newId;
+    }
+    /* ───────────────────────────────────────────────────── */
   }
 
   l.n      = newN;
