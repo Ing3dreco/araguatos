@@ -74,30 +74,33 @@ window.addEventListener('DOMContentLoaded', function() {
     SB_URL = u;
     SB_KEY = k;
     /* Intentar pull silencioso desde Supabase */
-    fetch(u + '/rest/v1/lots?select=*&order=m,n', {
-      headers: { 'apikey': k, 'Authorization': 'Bearer '+k }
-    }).then(function(r){ return r.json(); })
-    .then(function(data){
-      if (!Array.isArray(data) || data.length===0) return;
-      var base = buildLots();
-      data.forEach(function(row){
-        var l = base.find(function(x){ return x.id===row.id; });
-        if (!l) return;
-        l.type=row.type||l.type; l.area=row.area||l.area; l.fp=row.fp||null;
-        l.status=row.status||l.status; l.buyer=row.buyer||''; l.cc=row.cc||'';
-        l.phone=row.phone||''; l.email=row.email||''; l.addr=row.addr||'';
-        l.payType=row.pay_type||'fin'; l.dn=row.dn||20; l.mo=row.mo||36;
-        l.dnAmt=row.dn_amt||0; l.cmAmt=row.cm_amt||0; l.pv=row.pv||false;
-        l.saleDate=row.sale_date||null; l.salePrice=row.sale_price||null;
-        l.saleMonthIdx=row.sale_month_idx||0; l.obs=row.obs||'';
-      });
-      S.lots = base;
-      SB_CONNECTED = true;
-      updateConnUI();
-      saveS();
-      rTab(activeT);
-      updateVendidosUI(); /* actualizar contador tras pull de Supabase */
-    }).catch(function(){ /* silencioso */ });
+fetch(u + '/rest/v1/lots?select=*&order=m,n', {
+  headers: { 'apikey': k, 'Authorization': 'Bearer '+k }
+}).then(function(r){ return r.json(); })
+.then(function(data){
+  if (!Array.isArray(data) || data.length===0) return;
+
+  /* ── FIX: usar S.lots (ya cargado desde localStorage con IDs
+     correctos) en lugar de reconstruir desde buildLots() ── */
+  data.forEach(function(row){
+    var l = S.lots.find(function(x){ return x.id===row.id; });
+    if (!l) return;
+    l.type=row.type||l.type; l.area=row.area||l.area; l.fp=row.fp||null;
+    l.status=row.status||l.status; l.buyer=row.buyer||''; l.cc=row.cc||'';
+    l.phone=row.phone||''; l.email=row.email||''; l.addr=row.addr||'';
+    l.payType=row.pay_type||'fin'; l.dn=row.dn||20; l.mo=row.mo||36;
+    l.dnAmt=row.dn_amt||0; l.cmAmt=row.cm_amt||0; l.pv=row.pv||false;
+    l.saleDate=row.sale_date||null; l.salePrice=row.sale_price||null;
+    l.saleMonthIdx=row.sale_month_idx||0; l.obs=row.obs||'';
+  });
+  /* ── Ya NO se hace S.lots = base ── */
+
+  SB_CONNECTED = true;
+  updateConnUI();
+  saveS();
+  rTab(activeT);
+  updateVendidosUI();
+}).catch(function(){ /* silencioso */ });
   }
 
   /* Render inicial */
