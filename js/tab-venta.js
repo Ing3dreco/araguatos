@@ -255,6 +255,12 @@ function oSale() {
     +(calcMo2>MAX_MO?'<div class="al al-r" style="margin-bottom:10px">⚠️ Plazo supera '+MAX_MO+'m.</div>':'')
  
     // ── Campos existentes ──
+    +'<label class="fl">Género *</label>'
+    +'<select id="sm_gen">'
+    +'<option value=""'+(!l.gender?'selected':'')+'>— Seleccionar —</option>'
+    +'<option value="M"'+(l.gender==='M'?'selected':'')+'>Masculino — EL PROMITENTE COMPRADOR</option>'
+    +'<option value="F"'+(l.gender==='F'?'selected':'')+'>Femenino — LA PROMITENTE COMPRADORA</option>'
+    +'</select>'
     +'<label class="fl">Nombre completo *</label><input type="text" id="sm_b" value="'+(l.buyer||'')+'">'
     +'<label class="fl">Cédula / NIT *</label><input type="text" id="sm_cc" value="'+(l.cc||'')+'">'
  
@@ -328,7 +334,8 @@ function savSale() {
   l.addr    = G('sm_ad').value;
  
   // NUEVOS
-  l.ccCity      = G('sm_ccity') ? G('sm_ccity').value.trim() : '';
+  l.gender      = G('sm_gen')   ? G('sm_gen').value              : '';
+  l.ccCity      = G('sm_ccity') ? G('sm_ccity').value.trim()     : '';
   l.marital     = G('sm_mc')    ? G('sm_mc').value           : '';
   l.city        = G('sm_city')  ? G('sm_city').value.trim()  : '';
   l.nationality = G('sm_nat')   ? G('sm_nat').value          : 'colombiana';
@@ -350,7 +357,6 @@ function savSale() {
   cSaleM();
   rAll();
 }
-
 function cSaleM(e) {
   if(e&&e.target!==G('saleMod')) return;
   G('saleMod').style.display='none';
