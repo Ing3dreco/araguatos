@@ -305,24 +305,50 @@ function oSale() {
 }
 
 function savSale() {
-  var b=G('sm_b').value.trim(), cc=G('sm_cc').value.trim(), ph=G('sm_ph').value.trim();
+  var b   = G('sm_b').value.trim();
+  var cc  = G('sm_cc').value.trim();
+  var ph  = G('sm_ph').value.trim();
   if(!b||!cc||!ph){ alert('Nombre, cédula y teléfono son obligatorios.'); return; }
-  var l=S.lots.find(function(x){ return x.id===S.cl.lid; }); if(!l) return;
+ 
+  var l = S.lots.find(function(x){ return x.id===S.cl.lid; });
+  if(!l) return;
+ 
   var isPV3  = S.cl.pay==='cash'&&pvOk();
   var fP3    = isPV3?parseFloat((lp(l)*(1-S.cfg.pv/100)).toFixed(1)):lp(l);
   var manCI3 = parseCopPesos(G('ci_manual')?G('ci_manual').value:'');
   var dnAmt3 = manCI3>0?manCI3:(S.cl.dnAmt>0?S.cl.dnAmt:fP3*S.cl.dn/100);
   var cmAmt3 = parseCopPesos(G('cm_manual')?G('cm_manual').value:'');
   if (!cmAmt3 && S.cl.cmAmt>0) cmAmt3=S.cl.cmAmt;
-  l.buyer=b; l.cc=cc; l.phone=ph;
-  l.email=G('sm_em').value; l.addr=G('sm_ad').value;
-  l.status=G('sm_st').value; l.payType=S.cl.pay; l.pv=isPV3;
-  l.dn=S.cl.dn; l.mo=S.cl.mo; l.dnAmt=dnAmt3; l.cmAmt=cmAmt3;
-  l.saleDate=new Date().toISOString().slice(0,10);
-  l.saleMonthIdx=parseInt(G('sm_mo').value)||0;
-  l.obs=G('sm_ob').value; l.salePrice=fP3;
-  syncLot(l); saveS(); cSaleM(); rAll();
-  /* Sin pregunta de minuta — directo al registro */
+ 
+  // ── Guardar todos los campos (existentes + nuevos) ──
+  l.buyer   = b;
+  l.cc      = cc;
+  l.phone   = ph;
+  l.email   = G('sm_em').value;
+  l.addr    = G('sm_ad').value;
+ 
+  // NUEVOS
+  l.ccCity      = G('sm_ccity') ? G('sm_ccity').value.trim() : '';
+  l.marital     = G('sm_mc')    ? G('sm_mc').value           : '';
+  l.city        = G('sm_city')  ? G('sm_city').value.trim()  : '';
+  l.nationality = G('sm_nat')   ? G('sm_nat').value          : 'colombiana';
+ 
+  l.status        = G('sm_st').value;
+  l.payType       = S.cl.pay;
+  l.pv            = isPV3;
+  l.dn            = S.cl.dn;
+  l.mo            = S.cl.mo;
+  l.dnAmt         = dnAmt3;
+  l.cmAmt         = cmAmt3;
+  l.saleDate      = new Date().toISOString().slice(0,10);
+  l.saleMonthIdx  = parseInt(G('sm_mo').value)||0;
+  l.obs           = G('sm_ob').value;
+  l.salePrice     = fP3;
+ 
+  syncLot(l);
+  saveS();
+  cSaleM();
+  rAll();
 }
 
 function cSaleM(e) {
