@@ -161,12 +161,28 @@ function pushToSupabase() {
   var payload = S.lots.map(function(l) {
     return {
       id: l.id, m: l.m, n: l.n, type: l.type, area: l.area, fp: l.fp,
-      status: l.status, buyer: l.buyer || '', cc: l.cc || '',
-      phone: l.phone || '', email: l.email || '', addr: l.addr || '',
-      pay_type: l.payType || 'fin', dn: l.dn || 20, mo: l.mo || 36,
-      dn_amt: l.dnAmt || 0, cm_amt: l.cmAmt || 0, pv: l.pv || false,
-      sale_date: l.saleDate || null, sale_price: l.salePrice || null,
-      sale_month_idx: l.saleMonthIdx || 0, obs: l.obs || ''
+      status:    l.status,
+      buyer:     l.buyer     || '',
+      cc:        l.cc        || '',
+      phone:     l.phone     || '',
+      email:     l.email     || '',
+      addr:      l.addr      || '',
+      // ── NUEVOS campos del comprador ──
+      nationality: l.nationality || 'colombiana',
+      cc_city:     l.ccCity      || '',
+      marital:     l.marital     || '',
+      city:        l.city        || '',
+      // ── Datos de pago ──
+      pay_type:        l.payType      || 'fin',
+      dn:              l.dn           || 20,
+      mo:              l.mo           || 36,
+      dn_amt:          l.dnAmt        || 0,
+      cm_amt:          l.cmAmt        || 0,
+      pv:              l.pv           || false,
+      sale_date:       l.saleDate     || null,
+      sale_price:      l.salePrice    || null,
+      sale_month_idx:  l.saleMonthIdx || 0,
+      obs:             l.obs          || ''
     };
   });
   fetch(SB_URL + '/rest/v1/lots', {
@@ -193,35 +209,41 @@ function pullFromSupabase() {
     if (!Array.isArray(data) || !data.length) {
       pushToSupabase(); return;
     }
-// Supabase manda — reemplazar S.lots completamente
-var base = buildLots(); // solo para valores por defecto si faltan campos
-S.lots = data.map(function(row) {
-  var def = base.find(function(x){ return x.m===row.m && x.n===row.n; }) || {};
-  return {
-    id:           row.id,
-    m:            row.m,
-    n:            row.n,
-    type:         row.type         || def.type    || 'standard',
-    area:         row.area         || def.area    || 98,
-    fp:           row.fp           || null,
-    status:       row.status       || 'available',
-    buyer:        row.buyer        || '',
-    cc:           row.cc           || '',
-    phone:        row.phone        || '',
-    email:        row.email        || '',
-    addr:         row.addr         || '',
-    payType:      row.pay_type     || 'fin',
-    dn:           row.dn           || 20,
-    mo:           row.mo           || 36,
-    dnAmt:        row.dn_amt       || 0,
-    cmAmt:        row.cm_amt       || 0,
-    pv:           row.pv           || false,
-    saleDate:     row.sale_date    || null,
-    salePrice:    row.sale_price   || null,
-    saleMonthIdx: row.sale_month_idx || 0,
-    obs:          row.obs          || ''
-  };
-   });
+    var base = buildLots();
+    S.lots = data.map(function(row) {
+      var def = base.find(function(x){ return x.m===row.m && x.n===row.n; }) || {};
+      return {
+        id:           row.id,
+        m:            row.m,
+        n:            row.n,
+        type:         row.type         || def.type  || 'standard',
+        area:         row.area         || def.area  || 98,
+        fp:           row.fp           || null,
+        status:       row.status       || 'available',
+        // ── Datos del comprador ──
+        buyer:        row.buyer        || '',
+        cc:           row.cc           || '',
+        phone:        row.phone        || '',
+        email:        row.email        || '',
+        addr:         row.addr         || '',
+        // ── NUEVOS ──
+        nationality:  row.nationality  || 'colombiana',
+        ccCity:       row.cc_city      || '',   // snake_case → camelCase
+        marital:      row.marital      || '',
+        city:         row.city         || '',
+        // ── Pago ──
+        payType:      row.pay_type     || 'fin',
+        dn:           row.dn           || 20,
+        mo:           row.mo           || 36,
+        dnAmt:        row.dn_amt       || 0,
+        cmAmt:        row.cm_amt       || 0,
+        pv:           row.pv           || false,
+        saleDate:     row.sale_date    || null,
+        salePrice:    row.sale_price   || null,
+        saleMonthIdx: row.sale_month_idx || 0,
+        obs:          row.obs          || ''
+      };
+    });
     saveS();
     if (typeof pullLinderos === 'function') pullLinderos();
     rAll();
@@ -235,12 +257,28 @@ function syncLot(l) {
     headers: sbH({ 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' }),
     body: JSON.stringify([{
       id: l.id, m: l.m, n: l.n, type: l.type, area: l.area, fp: l.fp,
-      status: l.status, buyer: l.buyer || '', cc: l.cc || '',
-      phone: l.phone || '', email: l.email || '', addr: l.addr || '',
-      pay_type: l.payType || 'fin', dn: l.dn || 20, mo: l.mo || 36,
-      dn_amt: l.dnAmt || 0, cm_amt: l.cmAmt || 0, pv: l.pv || false,
-      sale_date: l.saleDate || null, sale_price: l.salePrice || null,
-      sale_month_idx: l.saleMonthIdx || 0, obs: l.obs || ''
+      status:    l.status,
+      buyer:     l.buyer     || '',
+      cc:        l.cc        || '',
+      phone:     l.phone     || '',
+      email:     l.email     || '',
+      addr:      l.addr      || '',
+      // ── NUEVOS ──
+      nationality: l.nationality || 'colombiana',
+      cc_city:     l.ccCity      || '',
+      marital:     l.marital     || '',
+      city:        l.city        || '',
+      // ── Pago ──
+      pay_type:        l.payType      || 'fin',
+      dn:              l.dn           || 20,
+      mo:              l.mo           || 36,
+      dn_amt:          l.dnAmt        || 0,
+      cm_amt:          l.cmAmt        || 0,
+      pv:              l.pv           || false,
+      sale_date:       l.saleDate     || null,
+      sale_price:      l.salePrice    || null,
+      sale_month_idx:  l.saleMonthIdx || 0,
+      obs:             l.obs          || ''
     }])
   }).catch(function() {});
 }
