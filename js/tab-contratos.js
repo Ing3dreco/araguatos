@@ -98,8 +98,35 @@
   // El parágrafo condicional:       {#INCLUIR_PARRAFO}...{/INCLUIR_PARRAFO}
   function buildData(lote, modoManual, incluirParrafo) {
 
+    // ── Campos de género ────────────────────────────────────────────
+    // Se calculan igual en ambos modos (manual usa género si está disponible,
+    // de lo contrario usa la forma neutra "EL/LA PROMITENTE COMPRADOR/A")
+    var esMujer = (lote.gender === 'F') ||
+                  (lote.buyer && /\b(a|ita)\b/i.test(lote.buyer.split(' ')[0]));
+    // Si es modo manual, siempre usar forma neutra
+    if (modoManual) esMujer = null;
+
+    var tituloComprador = esMujer === true
+      ? 'LA PROMITENTE COMPRADORA'
+      : esMujer === false
+        ? 'EL PROMITENTE COMPRADOR'
+        : 'EL/LA PROMITENTE COMPRADOR/A';
+
+    var generoId = esMujer === true
+      ? 'cédula de ciudadanía No.'
+      : esMujer === false
+        ? 'cédula de ciudadanía No.'
+        : 'cédula de ciudadanía No.';
+
+    var esteA = esMujer === true ? 'esta' : esMujer === false ? 'este' : 'este/a';
+
     if (modoManual) {
-      return Object.assign({}, BLANK, { INCLUIR_PARRAFO: incluirParrafo });
+      return Object.assign({}, BLANK, {
+        INCLUIR_PARRAFO   : incluirParrafo,
+        TITULO_COMPRADOR  : 'EL/LA PROMITENTE COMPRADOR/A',
+        GENERO_ID         : 'cédula de ciudadanía No.',
+        ESTE_A            : 'este/a',
+      });
     }
 
     // ── Modo B: datos reales del lote ──
@@ -165,6 +192,11 @@
       FECHA_FIRMA     : BLANK.FECHA_FIRMA,
       CC_COMPRADOR    : lote.cc     || BLANK.CC_COMPRADOR,
       CEL_COMPRADOR   : lote.phone  || BLANK.CEL_COMPRADOR,
+
+      // ── Género y título del comprador ──
+      TITULO_COMPRADOR  : tituloComprador,
+      GENERO_ID         : generoId,
+      ESTE_A            : esteA,
 
       // ── Condicional ──
       INCLUIR_PARRAFO : incluirParrafo,
