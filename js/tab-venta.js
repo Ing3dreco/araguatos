@@ -239,7 +239,7 @@ function oSale() {
   var l = S.lots.find(function(x){ return x.id===S.cl.lid; });
   if (!l) { alert('Selecciona un lote primero.'); return; }
   if (l.type==='internal') { alert('Los lotes internos se gestionan en la pestaña Lotes.'); return; }
-
+ 
   var isPV2  = S.cl.pay==='cash' && pvOk();
   var fP2    = isPV2 ? parseFloat((lp(l)*(1-S.cfg.pv/100)).toFixed(1)) : lp(l);
   var manCI2 = parseCopPesos(G('ci_manual')?G('ci_manual').value:'');
@@ -249,20 +249,58 @@ function oSale() {
   var mPmt2  = manCM2>0?manCM2:(S.cl.cmAmt>0?S.cl.cmAmt:(S.cl.mo>0?fin2/S.cl.mo:0));
   var calcMo2= (mPmt2>0&&fin2>0)?Math.ceil(fin2/mPmt2):S.cl.mo;
   var payDesc= S.cl.pay==='cash'?(isPV2?'Contado Preventa':'Contado'):'Financiado '+S.cl.mo+'m';
-
+ 
   G('smB').innerHTML=
     '<div class="al al-i" style="margin-bottom:12px"><b>Lote '+l.id+'</b> — '+fCOP(fP2)+' — '+payDesc+'</div>'
     +(calcMo2>MAX_MO?'<div class="al al-r" style="margin-bottom:10px">⚠️ Plazo supera '+MAX_MO+'m.</div>':'')
-    +'<label class="fl">Nombre completo *</label><input type="text" id="sm_b">'
-    +'<label class="fl">Cédula / NIT *</label><input type="text" id="sm_cc">'
-    +'<label class="fl">Teléfono *</label><input type="tel" id="sm_ph">'
-    +'<label class="fl">Correo electrónico</label><input type="email" id="sm_em">'
-    +'<label class="fl">Dirección</label><input type="text" id="sm_ad">'
+ 
+    // ── Campos existentes ──
+    +'<label class="fl">Nombre completo *</label><input type="text" id="sm_b" value="'+(l.buyer||'')+'">'
+    +'<label class="fl">Cédula / NIT *</label><input type="text" id="sm_cc" value="'+(l.cc||'')+'">'
+ 
+    // ── NUEVO: Ciudad de expedición de la cédula ──
+    +'<label class="fl">Ciudad de expedición de la cédula *</label>'
+    +'<input type="text" id="sm_ccity" placeholder="Ej: Bogotá" value="'+(l.ccCity||'')+'">'
+ 
+    +'<label class="fl">Teléfono / Celular *</label><input type="tel" id="sm_ph" value="'+(l.phone||'')+'">'
+    +'<label class="fl">Correo electrónico</label><input type="email" id="sm_em" value="'+(l.email||'')+'">'
+ 
+    // ── NUEVO: Estado civil ──
+    +'<label class="fl">Estado civil</label>'
+    +'<select id="sm_mc">'
+    +'<option value=""'+((!l.marital)?'selected':'')+'>— Seleccionar —</option>'
+    +'<option value="soltero/a"'+(l.marital==='soltero/a'?'selected':'')+'>Soltero/a</option>'
+    +'<option value="casado/a"'+(l.marital==='casado/a'?'selected':'')+'>Casado/a</option>'
+    +'<option value="unión libre"'+(l.marital==='unión libre'?'selected':'')+'>Unión libre</option>'
+    +'<option value="divorciado/a"'+(l.marital==='divorciado/a'?'selected':'')+'>Divorciado/a</option>'
+    +'<option value="viudo/a"'+(l.marital==='viudo/a'?'selected':'')+'>Viudo/a</option>'
+    +'</select>'
+ 
+    // ── NUEVO: Ciudad de domicilio ──
+    +'<label class="fl">Ciudad de domicilio</label>'
+    +'<input type="text" id="sm_city" placeholder="Ej: Florencia" value="'+(l.city||'')+'">'
+ 
+    +'<label class="fl">Dirección</label><input type="text" id="sm_ad" value="'+(l.addr||'')+'">'
+ 
+    // ── NUEVO: Nacionalidad ──
+    +'<label class="fl">Nacionalidad</label>'
+    +'<select id="sm_nat">'
+    +'<option value="colombiana"'+((!l.nationality||l.nationality==='colombiana')?'selected':'')+'>Colombiana</option>'
+    +'<option value="venezolana"'+(l.nationality==='venezolana'?'selected':'')+'>Venezolana</option>'
+    +'<option value="ecuatoriana"'+(l.nationality==='ecuatoriana'?'selected':'')+'>Ecuatoriana</option>'
+    +'<option value="peruana"'+(l.nationality==='peruana'?'selected':'')+'>Peruana</option>'
+    +'<option value="estadounidense"'+(l.nationality==='estadounidense'?'selected':'')+'>Estadounidense</option>'
+    +'<option value="otra">Otra</option>'
+    +'</select>'
+ 
+    // ── Campos existentes ──
     +'<label class="fl">Estado</label>'
-    +'<select id="sm_st"><option value="apartado">Apartado</option><option value="sold">Vendido</option></select>'
+    +'<select id="sm_st"><option value="apartado"'+(l.status==='apartado'?'selected':'')+'>Apartado</option>'
+    +'<option value="sold"'+(l.status==='sold'?'selected':'')+'>Vendido</option></select>'
     +'<label class="fl">Mes del proyecto (0 = ahora)</label>'
-    +'<input type="number" id="sm_mo" value="0" min="0" max="60">'
-    +'<label class="fl">Observaciones</label><input type="text" id="sm_ob">';
+    +'<input type="number" id="sm_mo" value="'+(l.saleMonthIdx||0)+'" min="0" max="60">'
+    +'<label class="fl">Observaciones</label><input type="text" id="sm_ob" value="'+(l.obs||'')+'">';
+ 
   G('saleMod').style.display='flex';
 }
 
