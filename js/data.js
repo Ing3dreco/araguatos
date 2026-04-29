@@ -13,7 +13,15 @@ function mkLot(m, n, type, area, fp) {
   var id = m + (n < 10 ? '0' + n : '' + n);
   return {
     id: id, m: m, n: n, type: type, area: area || 98, fp: fp || null,
-    status: 'available', buyer: '', cc: '', phone: '', email: '', addr: '',
+    status: 'available',
+    // ── Datos del comprador ──
+    buyer: '', cc: '', phone: '', email: '', addr: '',
+    // ── NUEVOS: campos para el contrato ──
+    nationality: 'colombiana',  // nacionalidad del comprador
+    ccCity: '',                 // ciudad de expedición de la cédula
+    marital: '',                // estado civil
+    city: '',                   // ciudad de domicilio
+    // ── Datos de pago ──
     payType: 'fin', dn: 20, mo: 36, dnAmt: 0, cmAmt: 0, pv: false,
     saleDate: null, saleMonthIdx: 0, salePrice: null, obs: ''
   };
