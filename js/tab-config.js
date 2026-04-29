@@ -169,6 +169,7 @@ function pushToSupabase() {
       addr:      l.addr      || '',
       // ── NUEVOS campos del comprador ──
       nationality: l.nationality || 'colombiana',
+      gender:      l.gender      || '',
       cc_city:     l.ccCity      || '',
       marital:     l.marital     || '',
       city:        l.city        || '',
@@ -228,6 +229,7 @@ function pullFromSupabase() {
         addr:         row.addr         || '',
         // ── NUEVOS ──
         nationality:  row.nationality  || 'colombiana',
+        gender:       row.gender        || '',
         ccCity:       row.cc_city      || '',   // snake_case → camelCase
         marital:      row.marital      || '',
         city:         row.city         || '',
@@ -265,6 +267,7 @@ function syncLot(l) {
       addr:      l.addr      || '',
       // ── NUEVOS ──
       nationality: l.nationality || 'colombiana',
+      gender:      l.gender      || '',
       cc_city:     l.ccCity      || '',
       marital:     l.marital     || '',
       city:        l.city        || '',
