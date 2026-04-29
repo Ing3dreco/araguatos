@@ -9,6 +9,21 @@ TP[37] = 20;
 
 var CPL = 40, TL = 78, CM = 0.03;
 
+/* ═══════════════════════════════════════════════════
+   PARCHE data.js — solo la función mkLot modificada
+   
+   Agrega los 4 campos nuevos del comprador:
+     nationality   → nacionalidad
+     cc_city       → ciudad de expedición de la cédula
+     marital       → estado civil
+     city          → ciudad de domicilio (distinto de addr=dirección)
+   
+   Busca la función mkLot() en data.js y reemplázala
+   con la de abajo (el resto del archivo no cambia).
+═══════════════════════════════════════════════════ */
+
+// ── REEMPLAZAR esta función en data.js ──────────────
+
 function mkLot(m, n, type, area, fp) {
   var id = m + (n < 10 ? '0' + n : '' + n);
   return {
@@ -18,6 +33,7 @@ function mkLot(m, n, type, area, fp) {
     buyer: '', cc: '', phone: '', email: '', addr: '',
     // ── NUEVOS: campos para el contrato ──
     nationality: 'colombiana',  // nacionalidad del comprador
+    gender: '',                     // 'M' = masculino, 'F' = femenino
     ccCity: '',                 // ciudad de expedición de la cédula
     marital: '',                // estado civil
     city: '',                   // ciudad de domicilio
