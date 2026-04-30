@@ -53,7 +53,7 @@
     CC_COMPRADOR    : '___________________________',
     CEL_COMPRADOR   : '__________________',
     // ── CORREGIDO: valor real del marcador {GENERO_ID} ──
-    GENERO_ID       : 'cédula de ciudadanía No.',
+    GENERO_ID       : 'Cédula de Ciudadanía No.',
   };
 
   // ═══════════════════════════════════════════════════════════════
