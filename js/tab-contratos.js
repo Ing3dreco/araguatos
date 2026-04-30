@@ -246,11 +246,41 @@
   }
 
   // ─── Generar y descargar el DOCX ─────────────────────────────────
+  function cargarLibrerias() {
+    return new Promise(function(resolve, reject) {
+      if (typeof PizZip !== 'undefined' && typeof Docxtemplater !== 'undefined') {
+        resolve(); return;
+      }
+      var s1 = document.createElement('script');
+      s1.src = CDN_PIZZIP;
+      s1.onerror = function() { reject(new Error('No se pudo cargar PizZip desde el CDN.')); };
+      s1.onload = function() {
+        if (typeof PizZip === 'undefined') {
+          reject(new Error('PizZip cargo pero no quedo disponible.')); return;
+        }
+        var s2 = document.createElement('script');
+        s2.src = CDN_TEMPLATER;
+        s2.onerror = function() { reject(new Error('No se pudo cargar Docxtemplater desde el CDN.')); };
+        s2.onload = function() {
+          if (typeof Docxtemplater === 'undefined') {
+            reject(new Error('Docxtemplater cargo pero no quedo disponible.')); return;
+          }
+          resolve();
+        };
+        document.head.appendChild(s2);
+      };
+      document.head.appendChild(s1);
+    });
+  }
+
   function generarContrato(lote, modoManual, incluirParrafo) {
     var btn = document.getElementById('btnGenerar');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando…'; }
 
-    fetch(TEMPLATE_PATH)
+    cargarLibrerias()
+      .then(function() {
+        return fetch(TEMPLATE_PATH);
+      })
       .then(function(resp) {
         if (!resp.ok) throw new Error(
           'No se encontró la plantilla "' + TEMPLATE_PATH + '" (HTTP ' + resp.status + ').\n' +
