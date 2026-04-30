@@ -1,11 +1,13 @@
 /* ══════════════════════════════════════════════════════════════════
    tab-contratos.js  —  Araguatos · ING3DRECO SAS
-   v3 — correcciones:
-     · Género completo (identificado/a, soltero/a, etc.)
-     · Estado civil conjugado por género
-     · Linderos desde Supabase (tabla lot_linderos)
-     · Precio y valores en letras (función numALetras)
-     · FECHA_FIRMA con fecha real del día
+   v4 — correcciones aplicadas:
+     · {GENERO_ID}: "cédula de ciudadanía No." o "NIT No."
+       (definido en BLANK y en buildData; el template ya lo tiene)
+     · {CUOTA_INICIAL_N}, {PRECIO_NUM}, {SALDO_N}, {VALOR_CUOTA_N}:
+       corregidos en contrato_template.docx (tenían $ espúreo)
+     · {FECHA_INICIO_P}: fecha hoy + 30 días en formato "DD de mes de YYYY"
+     · Linderos: cargarLinderos() robustecido; pushLinderos/pullLinderos
+       exportados a window para que tab-config.js los invoque
 ══════════════════════════════════════════════════════════════════ */
 
 (function () {
@@ -48,9 +50,9 @@
     CORREO_COMP     : '______________________________',
     TELEFONO_COMP   : '__________________',
     FECHA_FIRMA     : '__________________________',
-    FECHA_INICIO_P  : '_________________',
     CC_COMPRADOR    : '___________________________',
     CEL_COMPRADOR   : '__________________',
+    // ── CORREGIDO: valor real del marcador {GENERO_ID} ──
     GENERO_ID       : 'cédula de ciudadanía No.',
   };
 
@@ -70,7 +72,7 @@
     return new Intl.NumberFormat('es-CO').format(Math.round(millones * 1e6));
   }
 
-  // ─── FIX 4: Número en letras (recibe millones COP) ───────────
+  // Número en letras (recibe millones COP)
   function numALetras(millones) {
     if (!millones || isNaN(millones)) return '';
     var pesos = Math.round(Number(millones) * 1e6);
@@ -113,15 +115,26 @@
     return partes.join(' ') + ' PESOS MONEDA CORRIENTE';
   }
 
-  // ─── FIX 5: Fecha real del día ────────────────────────────────
-  function fechaHoy() {
-    var d = new Date();
-    var meses = ['enero','febrero','marzo','abril','mayo','junio',
-                 'julio','agosto','septiembre','octubre','noviembre','diciembre'];
-    return d.getDate() + ' de ' + meses[d.getMonth()] + ' de ' + d.getFullYear();
+  // Fecha en formato "DD de mes de YYYY"
+  var MESES = ['enero','febrero','marzo','abril','mayo','junio',
+               'julio','agosto','septiembre','octubre','noviembre','diciembre'];
+
+  function fechaFormato(d) {
+    return d.getDate() + ' de ' + MESES[d.getMonth()] + ' de ' + d.getFullYear();
   }
 
-  // ─── Área en texto para el contrato ──────────────────────────
+  function fechaHoy() {
+    return fechaFormato(new Date());
+  }
+
+  // ── CORREGIDO: {FECHA_INICIO_P} = hoy + 30 días ──────────────
+  function fechaInicioPago() {
+    var d = new Date();
+    d.setDate(d.getDate() + 30);
+    return fechaFormato(d);
+  }
+
+  // Área en texto para el contrato
   function numALetrasEntero(n) {
     if (n === 0) return 'CERO';
     var UNIDADES = ['', 'UN', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS',
@@ -159,7 +172,15 @@
     return numALetrasEntero(n) + ' (' + n + ') METROS CUADRADOS';
   }
 
-  // ─── FIX 1: Conjugaciones por género ─────────────────────────
+  // ── CORREGIDO: {GENERO_ID} según tipo de documento ───────────
+  // Por ahora todos son personas naturales con cédula.
+  // Si en el futuro hay personas jurídicas, agrega campo docType al lote.
+  function generoId(lote) {
+    if (!lote || lote.docType === 'nit') return 'NIT No.';
+    return 'cédula de ciudadanía No.';
+  }
+
+  // Conjugaciones por género
   function conjugar(gender) {
     var esM = gender === 'M';
     var esF = gender === 'F';
@@ -175,13 +196,12 @@
     };
   }
 
-  // ─── FIX 2: Estado civil conjugado por género ─────────────────
+  // Estado civil conjugado por género
   function conjugarEstadoCivil(marital, gender) {
     if (!marital) return BLANK.ESTADO_CIVIL;
     var m = marital.toLowerCase().trim();
     var esF = gender === 'F';
     var esM = gender === 'M';
-    // [neutro, masculino, femenino]
     var mapa = {
       'soltero':              ['soltero/a',             'soltero',              'soltera'],
       'soltera':              ['soltero/a',             'soltero',              'soltera'],
@@ -208,7 +228,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // FIX 3: LINDEROS DESDE SUPABASE
+  // LINDEROS — CORREGIDO: carga robusta + exportación global
   // ═══════════════════════════════════════════════════════════════
   var _linderosCache = null;
 
@@ -217,46 +237,98 @@
     if (window.S && window.S.linderos && window.S.linderos[loteId]) return window.S.linderos[loteId];
     try {
       var raw = localStorage.getItem('araguatos_linderos');
-      if (raw) { var obj = JSON.parse(raw); if (obj[loteId]) return obj[loteId]; }
+      if (raw) {
+        var obj = JSON.parse(raw);
+        if (obj[loteId]) return obj[loteId];
+      }
     } catch(e) {}
     return {};
   }
 
   function cargarLinderos() {
     return new Promise(function(resolve) {
-      if (_linderosCache) { resolve(_linderosCache); return; }
+      // Si ya tenemos caché en memoria, usarla
+      if (_linderosCache && Object.keys(_linderosCache).length > 0) {
+        resolve(_linderosCache);
+        return;
+      }
+
+      // Intentar desde localStorage
       try {
         var raw = localStorage.getItem('araguatos_linderos');
-        if (raw) { _linderosCache = JSON.parse(raw); resolve(_linderosCache); return; }
+        if (raw) {
+          var cached = JSON.parse(raw);
+          if (cached && Object.keys(cached).length > 0) {
+            _linderosCache = cached;
+            resolve(_linderosCache);
+            return;
+          }
+        }
       } catch(e) {}
 
+      // Cargar desde Supabase
       var url = (typeof SB_URL !== 'undefined' ? SB_URL : '');
       var key = (typeof SB_KEY !== 'undefined' ? SB_KEY : '');
       var tok = (typeof SB_TOKEN !== 'undefined' && SB_TOKEN) ? SB_TOKEN : key;
-      if (!url || !key) { resolve({}); return; }
+
+      if (!url || !key) {
+        console.warn('[contratos] Sin credenciales Supabase — linderos no disponibles.');
+        resolve({});
+        return;
+      }
 
       fetch(url + '/rest/v1/lot_linderos?select=*', {
-        headers: { 'apikey': key, 'Authorization': 'Bearer ' + tok }
+        headers: {
+          'apikey': key,
+          'Authorization': 'Bearer ' + tok,
+          'Content-Type': 'application/json'
+        }
       })
-      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' al cargar lot_linderos');
+        return r.json();
+      })
       .then(function(data) {
         if (!Array.isArray(data)) { resolve({}); return; }
         var mapa = {};
         data.forEach(function(row) {
           mapa[row.lot_id] = {
-            norte_dist: row.norte_dist || '', norte_desc: row.norte_desc || '',
-            sur_dist:   row.sur_dist   || '', sur_desc:   row.sur_desc   || '',
-            este_dist:  row.este_dist  || '', este_desc:  row.este_desc  || '',
-            oeste_dist: row.oeste_dist || '', oeste_desc: row.oeste_desc || '',
+            norte_dist: row.norte_dist || '',
+            norte_desc: row.norte_desc || '',
+            sur_dist:   row.sur_dist   || '',
+            sur_desc:   row.sur_desc   || '',
+            este_dist:  row.este_dist  || '',
+            este_desc:  row.este_desc  || '',
+            oeste_dist: row.oeste_dist || '',
+            oeste_desc: row.oeste_desc || '',
           };
         });
         _linderosCache = mapa;
-        try { localStorage.setItem('araguatos_linderos', JSON.stringify(mapa)); } catch(e) {}
+        try {
+          localStorage.setItem('araguatos_linderos', JSON.stringify(mapa));
+        } catch(e) {}
+        console.log('[contratos] Linderos cargados:', Object.keys(mapa).length, 'lotes');
         resolve(mapa);
       })
-      .catch(function() { resolve({}); });
+      .catch(function(err) {
+        console.error('[contratos] Error cargando linderos:', err.message);
+        resolve({});
+      });
     });
   }
+
+  // ── Exportar para que tab-config.js pueda invocarlos ─────────
+  window.pushLinderos = function() {
+    // No-op: los linderos se editan directamente en Supabase
+  };
+
+  window.pullLinderos = function() {
+    _linderosCache = null; // Forzar recarga
+    try { localStorage.removeItem('araguatos_linderos'); } catch(e) {}
+    cargarLinderos().then(function() {
+      console.log('[contratos] Linderos actualizados desde Supabase.');
+    });
+  };
 
   // ═══════════════════════════════════════════════════════════════
   // CONSTRUCCIÓN DE DATOS PARA EL TEMPLATE
@@ -267,6 +339,8 @@
 
     if (modoManual) {
       return Object.assign({}, BLANK, {
+        FECHA_FIRMA      : fechaHoy(),
+        FECHA_INICIO_P   : fechaInicioPago(),   // ← CORREGIDO
         INCLUIR_PARRAFO  : incluirParrafo,
         TITULO_COMPRADOR : conj.TITULO_COMPRADOR,
         IDENTIFICADO     : conj.IDENTIFICADO,
@@ -281,9 +355,13 @@
     var saldo     = Math.max(0, precio - cuotaIni);
     var cuotaMes  = Number(lote.cmAmt) || (lote.mo > 0 ? saldo / lote.mo : 0);
 
-    var lind = (linderosMap && linderosMap[lote.id])
-               ? linderosMap[lote.id]
-               : getLinderos(lote.id);
+    // Linderos: primero el mapa recién cargado, luego caché local
+    var lind = {};
+    if (linderosMap && linderosMap[lote.id]) {
+      lind = linderosMap[lote.id];
+    } else {
+      lind = getLinderos(lote.id);
+    }
 
     return {
       // ── Comprador ──
@@ -291,10 +369,13 @@
       NACIONALIDAD     : lote.nationality || 'colombiana',
       CEDULA           : lote.cc          || BLANK.CEDULA,
       CIUDAD_EXP       : lote.ccCity      || BLANK.CIUDAD_EXP,
-      ESTADO_CIVIL     : conjugarEstadoCivil(lote.marital, gender),  // FIX 2
+      ESTADO_CIVIL     : conjugarEstadoCivil(lote.marital, gender),
       DOMICILIO        : lote.city        || BLANK.DOMICILIO,
 
-      // ── FIX 1: Formas gramaticales ──
+      // ── CORREGIDO: {GENERO_ID} siempre definido ──
+      GENERO_ID        : generoId(lote),
+
+      // ── Formas gramaticales ──
       TITULO_COMPRADOR : conj.TITULO_COMPRADOR,
       IDENTIFICADO     : conj.IDENTIFICADO,
       ESTE_A           : conj.ESTE_A,
@@ -306,7 +387,7 @@
       AREA_TEXTO: areaTexto(lote.area),
       AREA_M2   : String(lote.area || BLANK.AREA_M2),
 
-      // ── FIX 3: Linderos reales ──
+      // ── Linderos ──
       NORTE_DIST: lind.norte_dist || BLANK.NORTE_DIST,
       NORTE_DESC: lind.norte_desc || BLANK.NORTE_DESC,
       SUR_DIST  : lind.sur_dist   || BLANK.SUR_DIST,
@@ -316,7 +397,7 @@
       OESTE_DIST: lind.oeste_dist || BLANK.OESTE_DIST,
       OESTE_DESC: lind.oeste_desc || BLANK.OESTE_DESC,
 
-      // ── FIX 4: Valores en letras ──
+      // ── Valores en letras y números ──
       PRECIO_TEXTO    : precio   > 0 ? numALetras(precio)   : BLANK.PRECIO_TEXTO,
       PRECIO_NUM      : precio   > 0 ? numFmtM(precio)      : BLANK.PRECIO_NUM,
       CUOTA_INICIAL_T : cuotaIni > 0 ? numALetras(cuotaIni) : BLANK.CUOTA_INICIAL_T,
@@ -332,7 +413,9 @@
       NUM_CUOTAS      : String(lote.mo || BLANK.NUM_CUOTAS),
       CUOTA_FINAL_T   : BLANK.CUOTA_FINAL_T,
       CUOTA_FINAL_N   : BLANK.CUOTA_FINAL_N,
-      FECHA_INICIO_P  : BLANK.FECHA_INICIO_P,
+
+      // ── CORREGIDO: fecha inicio de pago = hoy + 30 días ──
+      FECHA_INICIO_P  : fechaInicioPago(),
 
       // ── Contacto ──
       DIRECCION_COMP  : lote.addr  || BLANK.DIRECCION_COMP,
@@ -341,10 +424,10 @@
       CC_COMPRADOR    : lote.cc    || BLANK.CC_COMPRADOR,
       CEL_COMPRADOR   : lote.phone || BLANK.CEL_COMPRADOR,
 
-      // ── FIX 5: Fecha real ──
+      // ── Fechas ──
       FECHA_FIRMA     : fechaHoy(),
 
-      // ── Condicional páragrafo ──
+      // ── Condicional parágrafo ──
       INCLUIR_PARRAFO : incluirParrafo,
     };
   }
@@ -426,7 +509,9 @@
           linebreaks:    true,
           nullGetter:    function() { return ''; },
         });
-        doc.render(buildData(lote, modoManual, incluirParrafo, obj.lind));
+        var data = buildData(lote, modoManual, incluirParrafo, obj.lind);
+        console.log('[contratos] Data a renderizar:', data);
+        doc.render(data);
         var blob = doc.getZip().generate({
           type:        'blob',
           mimeType:    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -577,8 +662,12 @@
       });
     }
 
-    // Precargar linderos en background
-    cargarLinderos();
+    // Precargar linderos en background al abrir el panel
+    cargarLinderos().then(function(mapa) {
+      var n = Object.keys(mapa).length;
+      if (n > 0) console.log('[contratos] Linderos listos: ' + n + ' lotes.');
+      else console.warn('[contratos] Sin linderos. Verifica la tabla lot_linderos en Supabase.');
+    });
   }
 
   function actualizarUI() {
