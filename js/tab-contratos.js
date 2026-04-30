@@ -31,8 +31,8 @@
 (function () {
 
   var TEMPLATE_PATH = 'contrato_template.docx';
-  var CDN_PIZZIP    = 'js/libs/pizzip.min.js';
-  var CDN_TEMPLATER = 'js/libs/docxtemplater.js';
+  var CDN_PIZZIP    = 'https://cdnjs.cloudflare.com/ajax/libs/pizzip/3.1.4/pizzip.min.js';
+  var CDN_TEMPLATER = 'https://cdnjs.cloudflare.com/ajax/libs/docxtemplater/3.47.4/docxtemplater.js';
 
   // ─── Líneas en blanco para modo manual ───────────────────────────
   var BLANK = {
@@ -248,7 +248,7 @@
   // ─── Generar y descargar el DOCX ─────────────────────────────────
   function cargarLibrerias() {
     return new Promise(function(resolve, reject) {
-      if (typeof PizZip !== 'undefined' && typeof Docxtemplater !== 'undefined') {
+      if (typeof PizZip !== 'undefined' && (typeof Docxtemplater !== 'undefined' || typeof window.docxtemplater !== 'undefined')) {
         resolve(); return;
       }
       var s1 = document.createElement('script');
@@ -262,8 +262,12 @@
         s2.src = CDN_TEMPLATER;
         s2.onerror = function() { reject(new Error('No se pudo cargar Docxtemplater desde el CDN.')); };
         s2.onload = function() {
-          if (typeof Docxtemplater === 'undefined') {
+          if (typeof window.docxtemplater === 'undefined' && typeof Docxtemplater === 'undefined') {
             reject(new Error('Docxtemplater cargo pero no quedo disponible.')); return;
+          }
+          // Normalizar: el build expone window.docxtemplater (minuscula)
+          if (typeof Docxtemplater === 'undefined' && typeof window.docxtemplater !== 'undefined') {
+            window.Docxtemplater = window.docxtemplater;
           }
           resolve();
         };
@@ -276,6 +280,11 @@
   function generarContrato(lote, modoManual, incluirParrafo) {
     var btn = document.getElementById('btnGenerar');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando…'; }
+
+    // Normalizar nombre por si ya estaba cargado
+    if (typeof Docxtemplater === 'undefined' && typeof window.docxtemplater !== 'undefined') {
+      window.Docxtemplater = window.docxtemplater;
+    }
 
     cargarLibrerias()
       .then(function() {
