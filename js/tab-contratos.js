@@ -250,16 +250,7 @@
     var btn = document.getElementById('btnGenerar');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando…'; }
 
-    Promise.resolve()
-      .then(function() {
-        if (typeof PizZip === 'undefined')        return loadScript(CDN_PIZZIP);
-      })
-      .then(function() {
-        if (typeof Docxtemplater === 'undefined') return loadScript(CDN_TEMPLATER);
-      })
-      .then(function() {
-        return fetch(TEMPLATE_PATH);
-      })
+    fetch(TEMPLATE_PATH)
       .then(function(resp) {
         if (!resp.ok) throw new Error(
           'No se encontró la plantilla "' + TEMPLATE_PATH + '" (HTTP ' + resp.status + ').\n' +
