@@ -31,8 +31,8 @@
 (function () {
 
   var TEMPLATE_PATH = 'contrato_template.docx';
-  var CDN_PIZZIP    = 'https://cdnjs.cloudflare.com/ajax/libs/pizzip/3.1.4/pizzip.min.js';
-  var CDN_TEMPLATER = 'https://cdnjs.cloudflare.com/ajax/libs/docxtemplater/3.47.4/docxtemplater.js';
+  var CDN_PIZZIP    = 'js/libs/pizzip.min.js';
+  var CDN_TEMPLATER = 'js/libs/docxtemplater.js';
 
   // ─── Líneas en blanco para modo manual ───────────────────────────
   var BLANK = {
