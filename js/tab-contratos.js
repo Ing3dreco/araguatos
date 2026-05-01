@@ -285,17 +285,19 @@
           }
 
           // Mapear filas → { lot_id: { norte_dist, norte_desc, ... } }
+          // Columnas reales en Supabase: n_dist, n_desc, s_dist, s_desc,
+          //   e_dist, e_desc, o_dist, o_desc
           var mapa = {};
           data.forEach(function(row) {
             mapa[row.lot_id] = {
-              norte_dist: row.norte_dist || '',
-              norte_desc: row.norte_desc || '',
-              sur_dist  : row.sur_dist   || '',
-              sur_desc  : row.sur_desc   || '',
-              este_dist : row.este_dist  || '',
-              este_desc : row.este_desc  || '',
-              oeste_dist: row.oeste_dist || '',
-              oeste_desc: row.oeste_desc || '',
+              norte_dist: row.n_dist || '',
+              norte_desc: row.n_desc || '',
+              sur_dist  : row.s_dist || '',
+              sur_desc  : row.s_desc || '',
+              este_dist : row.e_dist || '',
+              este_desc : row.e_desc || '',
+              oeste_dist: row.o_dist || '',
+              oeste_desc: row.o_desc || '',
             };
           });
 
