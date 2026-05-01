@@ -123,7 +123,19 @@ function onAuthSuccess() {
   if (ov) ov.style.display = 'none';
   SB_CONNECTED = true;
   updateConnUI();
+ 
+  // Cargar datos principales primero, luego linderos ya con JWT activo
   pullFromSupabase();
+ 
+  // pullLinderos() también se llama dentro de pullFromSupabase() al final,
+  // pero lo llamamos explícitamente aquí también por si pullFromSupabase
+  // termina antes de que window.pullLinderos esté definido en la primera carga.
+  // El setTimeout garantiza que tab-contratos.js ya haya sido parseado.
+  setTimeout(function() {
+    if (typeof window.pullLinderos === 'function') {
+      window.pullLinderos();
+    }
+  }, 500);
 }
  
 function showLogin() {
