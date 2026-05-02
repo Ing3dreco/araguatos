@@ -89,23 +89,46 @@
     if (!millones || isNaN(millones)) return '';
     var pesos = Math.round(Number(millones) * 1e6);
     if (pesos === 0) return 'CERO PESOS MONEDA CORRIENTE';
+
     var U = ['','UN','DOS','TRES','CUATRO','CINCO','SEIS','SIETE','OCHO','NUEVE','DIEZ','ONCE',
              'DOCE','TRECE','CATORCE','QUINCE','DIECISÉIS','DIECISIETE','DIECIOCHO','DIECINUEVE'];
     var D = ['','','VEINTE','TREINTA','CUARENTA','CINCUENTA','SESENTA','SETENTA','OCHENTA','NOVENTA'];
     var C = ['','CIENTO','DOSCIENTOS','TRESCIENTOS','CUATROCIENTOS','QUINIENTOS',
              'SEISCIENTOS','SETECIENTOS','OCHOCIENTOS','NOVECIENTOS'];
+
     function dec(n) { return n < 20 ? U[n] : D[Math.floor(n/10)] + (n%10 ? ' Y '+U[n%10] : ''); }
     function cien(n) {
       if (!n) return ''; if (n === 100) return 'CIEN';
       var c = Math.floor(n/100), r = n%100;
       return (c ? C[c] : '') + (r ? (c ? ' ' : '') + dec(r) : '');
     }
-    var mm=Math.floor(pesos/1e9), m2=Math.floor((pesos%1e9)/1e6),
-        k=Math.floor((pesos%1e6)/1e3), r=pesos%1e3, p=[];
-    if (mm) p.push(cien(mm)+' MIL MILLONES');
-    if (m2) p.push(m2===1 ? 'UN MILLÓN' : cien(m2)+' MILLONES');
-    if (k)  p.push(k===1  ? 'MIL'       : cien(k)+' MIL');
-    if (r)  p.push(cien(r));
+
+    var mm = Math.floor(pesos / 1e9);
+    var m2 = Math.floor((pesos % 1e9) / 1e6);
+    var k  = Math.floor((pesos % 1e6) / 1e3);
+    var r  = pesos % 1e3;
+
+    // Regla del "DE": solo cuando el grupo es el ÚNICO (no hay nada más antes ni después)
+    // SEIS MILLONES DE PESOS      ← millones es el único grupo
+    // SEIS MILLONES DOSCIENTOS MIL PESOS  ← hay dos grupos, ninguno lleva DE
+    // DOSCIENTOS MIL DE PESOS     ← miles es el único grupo
+    var soloMilMill  = mm > 0 && m2 === 0 && k === 0 && r === 0;
+    var soloMill     = mm === 0 && m2 > 0 && k === 0 && r === 0;
+    var soloMiles    = mm === 0 && m2 === 0 && k > 0 && r === 0;
+
+    var p = [];
+
+    if (mm) p.push(cien(mm) + ' MIL MILLONES' + (soloMilMill ? ' DE' : ''));
+    if (m2) {
+      var txtM = m2 === 1 ? 'UN MILLÓN' : cien(m2) + ' MILLONES';
+      p.push(txtM + (soloMill ? ' DE' : ''));
+    }
+    if (k) {
+      var txtK = k === 1 ? 'MIL' : cien(k) + ' MIL';
+      p.push(txtK + (soloMiles ? ' DE' : ''));
+    }
+    if (r) p.push(cien(r));
+
     return p.join(' ') + ' PESOS MONEDA CORRIENTE';
   }
 
