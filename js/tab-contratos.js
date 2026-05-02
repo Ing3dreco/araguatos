@@ -170,8 +170,26 @@
 
   function areaTexto(m2) {
     if (!m2) return BLANK.AREA_TEXTO;
-    var n = Math.round(Number(m2));
-    return numALetrasEntero(n) + ' (' + n + ') METROS CUADRADOS';
+    var num    = Number(m2);
+    var entera = Math.floor(num);
+    var dec    = Math.round((num - entera) * 100);
+
+    var textoEntero = numALetrasEntero(entera);
+
+    function decTexto(d) {
+      if (d <= 0) return '';
+      var U = ['','UN','DOS','TRES','CUATRO','CINCO','SEIS','SIETE','OCHO','NUEVE',
+               'DIEZ','ONCE','DOCE','TRECE','CATORCE','QUINCE','DIECISÉIS',
+               'DIECISIETE','DIECIOCHO','DIECINUEVE'];
+      var D = ['','','VEINTE','TREINTA','CUARENTA','CINCUENTA',
+               'SESENTA','SETENTA','OCHENTA','NOVENTA'];
+      var txt = d < 20 ? U[d] : D[Math.floor(d/10)] + (d%10 ? ' Y ' + U[d%10] : '');
+      return 'PUNTO ' + txt;
+    }
+
+    var sufDec = dec > 0 ? ' ' + decTexto(dec) : '';
+    var numStr = (num % 1 === 0) ? String(entera) : num.toFixed(2);
+    return textoEntero + sufDec + ' METROS CUADRADOS (' + numStr + ' m\u00b2)';
   }
 
   function generoId(lote) {
