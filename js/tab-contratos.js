@@ -167,7 +167,7 @@
   }
 
   function generoId(lote) {
-    return (!lote || lote.docType === 'nit') ? 'NIT No.' : 'cédula de ciudadanía No.';
+    return (!lote || lote.docType === 'nit') ? 'NIT No.' : 'Cédula de Ciudadanía No.';
   }
 
   function conjugar(gender) {
