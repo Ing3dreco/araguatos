@@ -52,6 +52,7 @@ function rTab(id) {
   else if (id==='ingresos')  rIngresos();
   // ── FIX: llamar initContratos (definida en tab-contratos.js) ──
   else if (id==='contratos') initContratos();
+  else if (id==='seguimiento') initSeguimiento();
   else if (id==='config')    initConfigPanel();
 }
  
