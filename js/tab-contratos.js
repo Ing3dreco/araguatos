@@ -189,7 +189,7 @@
 
     var sufDec = dec > 0 ? ' ' + decTexto(dec) : '';
     var numStr = (num % 1 === 0) ? String(entera) : num.toFixed(2);
-    return textoEntero + sufDec + ' METROS CUADRADOS (' + numStr + ' m\u00b2)';
+    return textoEntero + sufDec + ' METROS CUADRADOS ';
   }
 
   function generoId(lote) {
