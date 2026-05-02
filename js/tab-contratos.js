@@ -143,19 +143,27 @@
 
   function numALetrasEntero(n) {
     var U=['','UN','DOS','TRES','CUATRO','CINCO','SEIS','SIETE','OCHO','NUEVE','DIEZ','ONCE',
-           'DOCE','TRECE','CATORCE','QUINCE','DIECISÉIS','DIECISIETE','DIECIOCHO','DIECINUEVE'];
+           'DOCE','TRECE','CATORCE','QUINCE','DIECISÉIS','DIECISIETE','DIECIOCHO','DIECINUEVE',
+           'VEINTE','VEINTIUNO','VEINTIDÓS','VEINTITRÉS','VEINTICUATRO','VEINTICINCO',
+           'VEINTISÉIS','VEINTISIETE','VEINTIOCHO','VEINTINUEVE'];
     var D=['','','VEINTE','TREINTA','CUARENTA','CINCUENTA','SESENTA','SETENTA','OCHENTA','NOVENTA'];
     var C=['','CIENTO','DOSCIENTOS','TRESCIENTOS','CUATROCIENTOS','QUINIENTOS',
            'SEISCIENTOS','SETECIENTOS','OCHOCIENTOS','NOVECIENTOS'];
     function grupo(x) {
-      if (!x) return ''; if (x===100) return 'CIEN';
-      var c=Math.floor(x/100), r=x%100, t=c ? C[c] : '';
-      if (r<20) t+=(t?' ':'')+U[r];
-      else { var dv=Math.floor(r/10),uv=r%10; t+=(t?' ':'')+D[dv]+(uv?' Y '+U[uv]:''); }
+      if (!x) return ''; if (x === 100) return 'CIEN';
+      var c = Math.floor(x/100), r = x%100, t = c ? C[c] : '';
+      if (r === 0) return t;
+      if (r < 30) {
+        // 1-29: usar tabla U directamente (ya incluye VEINTE, VEINTIUNO…VEINTINUEVE)
+        t += (t ? ' ' : '') + U[r];
+      } else {
+        var dv = Math.floor(r/10), uv = r%10;
+        t += (t ? ' ' : '') + D[dv] + (uv ? ' Y ' + U[uv] : '');
+      }
       return t;
     }
-    var k=Math.floor(n/1000), r=n%1000, p=[];
-    if (k) p.push(grupo(k)+' MIL');
+    var k = Math.floor(n/1000), r = n%1000, p = [];
+    if (k) p.push(grupo(k) + ' MIL');
     if (r) p.push(grupo(r));
     return p.join(' ') || 'CERO';
   }
