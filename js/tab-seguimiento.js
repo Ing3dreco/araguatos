@@ -19,13 +19,7 @@
   var TG_TOKEN   = '8737800495:AAHgsYZ274AXPdXxky8hfjjedgEy-idusus';
   var TG_CHAT_ID = '-5030514648';
 
-  function tgEnviar(mensaje) {
-    if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOKEN') return;
-    fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TG_CHAT_ID, text: mensaje, parse_mode: 'HTML' })
-    }).catch(function(e) { console.warn('[Telegram] Error:', e.message); });
+function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOKEN') return; fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: TG_CHAT_ID, text: mensaje, parse_mode: 'HTML' }) }).catch(function(e) { console.warn('[Telegram] Error:', e.message); });
   }
 
   /* ── Estado local ─────────────────────────────────────────── */
@@ -509,6 +503,7 @@
       '<div style="flex:1;min-width:0">' +
       '<div style="font-size:12px;font-weight:700;color:'+(e.completado?'#888':t.color)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(e.completado?'<s>':'')+e.titulo+(e.completado?'</s>':'')+'</div>' +
       '<div style="font-size:11px;color:#666;margin-top:2px">'+fmtFecha(isoFecha(e.fecha))+(hora?' · '+hora:'')+' · '+dLabel+recLabel+'</div>' +
+      (e.vendedor_id ? (function(){ var v=_vendedores.find(function(x){return x.id===e.vendedor_id;}); return v?'<div style="display:inline-block;font-size:10px;padding:2px 7px;border-radius:10px;background:#e8eaf6;color:#3949ab;font-weight:700;margin-top:3px">👤 '+v.nombre+'</div>':''; })() : '') +
       (e.descripcion?'<div style="font-size:11px;color:#888;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.descripcion+'</div>':'') +
       '</div>' +
       '<div style="display:flex;gap:2px;flex-shrink:0;flex-direction:column;align-items:flex-end">' +
@@ -730,6 +725,11 @@
       '<select id="segEvReminder" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
       REMINDER_OPTS.map(function(o){ return '<option value="'+o.val+'"'+(reminderVal===o.val?' selected':'')+'>'+o.label+'</option>'; }).join('')+
       '</select>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Vendedor responsable</label>' +
+      '<select id="segEvVendedor" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<option value="">— Sin asignar —</option>' +
+      _vendedores.map(function(v){ return '<option value="'+v.id+'"'+(e&&e.vendedor_id===v.id?' selected':'')+'>'+v.nombre+'</option>'; }).join('') +
+      '</select>' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Descripción</label>' +
       '<textarea id="segEvDesc" rows="2" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box;resize:vertical">'+(e?(e.descripcion||''):'')+'</textarea>' +
       _inp('segEvRel','Relacionado (lote ID o nombre)','text',e?(e.relacionado||''):'','Ej: B02 o Juan Pérez');
@@ -744,6 +744,7 @@
         titulo      : titulo,
         fecha       : fechaInput,
         reminder_min: reminderMin,
+        vendedor_id : document.getElementById('segEvVendedor').value || null,
         descripcion : document.getElementById('segEvDesc').value.trim(),
         relacionado : document.getElementById('segEvRel').value.trim(),
       };
@@ -755,11 +756,9 @@
           var idx=_eventos.findIndex(function(x){return x.id===e.id;});
           if(idx>=0) _eventos[idx]=Object.assign(_eventos[idx],datos);
           // Telegram: edición
-          tgEnviar('✏️ <b>Evento editado</b>\n📋 '+datos.titulo+'\n📅 '+fmtFecha(datos.fecha)+(fmtHora(datos.fecha)?' a las '+fmtHora(datos.fecha):'')+'\n⏰ Recordatorio: '+REMINDER_OPTS.find(function(o){return o.val===reminderMin;}).label);
         } else {
           if(Array.isArray(res)) _eventos=_eventos.concat(res);
           // Telegram: nuevo evento
-          tgEnviar('📅 <b>Nuevo evento creado</b>\n📋 '+datos.titulo+'\n'+REMINDER_OPTS.find(function(o){return o.val===reminderMin;}).label+'\n📆 '+fmtFecha(datos.fecha)+(fmtHora(datos.fecha)?' a las '+fmtHora(datos.fecha):''));
         }
         _cerrarModal(); _renderVista(); _actualizarCampanita();
       }).catch(function(err){alert('Error: '+err.message);});
@@ -772,7 +771,6 @@
       var idx=_eventos.findIndex(function(e){return e.id===id;});
       var titulo=idx>=0?_eventos[idx].titulo:'';
       if(idx>=0) _eventos[idx].completado=true;
-      tgEnviar('✅ <b>Evento completado</b>: '+titulo);
       _renderVista(); _actualizarCampanita();
     });
   };
@@ -783,7 +781,6 @@
       var idx=_eventos.findIndex(function(e){return e.id===id;});
       var titulo=idx>=0?_eventos[idx].titulo:'';
       if(idx>=0) _eventos[idx].completado=false;
-      tgEnviar('↩️ <b>Evento reabierto</b>: '+titulo);
       _renderVista(); _actualizarCampanita();
     });
   };
@@ -794,7 +791,6 @@
     if(!confirm('¿Eliminar el evento "'+( ev?ev.titulo:'')+ '"? Esta acción no se puede deshacer.')) return;
     sbDelete('eventos',id).then(function(){
       _eventos=_eventos.filter(function(e){return e.id!==id;});
-      tgEnviar('🗑️ <b>Evento eliminado</b>: '+(ev?ev.titulo:''));
       _renderVista(); _actualizarCampanita();
     }).catch(function(e){alert('Error al eliminar: '+e.message);});
   };
@@ -846,7 +842,6 @@
         if(idx>=0){_pagos[idx].pagado=true;_pagos[idx].fecha_pago=fechaPago||hoy();_pagos[idx].monto=montoVal;_pagos[idx].nota=nota;}
         // Telegram: pago registrado
         var lote=window.S&&window.S.lots?window.S.lots.find(function(l){return l.id===pago.lot_id;}):null;
-        tgEnviar('💳 <b>Pago registrado</b>\nLote '+pago.lot_id+(lote?' · '+lote.buyer:'')+'\nCuota #'+pago.num_cuota+' · '+fmtMonto(montoVal)+'\n'+( nota?'Nota: '+nota:''));
         _cerrarModal(); _renderVista(); _actualizarCampanita();
       }).catch(function(e){alert('Error: '+e.message);});
     });
@@ -918,7 +913,6 @@
     if(!confirm('¿Eliminar el prospecto "'+(p?p.nombre:'')+'"? Esta acción no se puede deshacer.')) return;
     sbDelete('prospectos',id).then(function(){
       _prospectos=_prospectos.filter(function(x){return x.id!==id;});
-      tgEnviar('🗑️ <b>Prospecto eliminado</b>: '+(p?p.nombre:''));
       _renderVista(); _actualizarCampanita();
     }).catch(function(e){alert('Error al eliminar: '+e.message);});
   };
@@ -956,10 +950,8 @@
         if(d.id){
           var idx=_prospectos.findIndex(function(p){return p.id===d.id;});
           if(idx>=0) _prospectos[idx]=Object.assign(_prospectos[idx],payload);
-          tgEnviar('✏️ <b>Prospecto editado</b>: '+nombre);
         } else {
           if(Array.isArray(res)) _prospectos=res.concat(_prospectos);
-          tgEnviar('👥 <b>Nuevo prospecto</b>: '+nombre+(payload.vendedor_id?'\nVendedor: '+(_vendedores.find(function(v){return v.id===payload.vendedor_id;})||{nombre:''}).nombre:''));
         }
         _cerrarModal(); _renderVista(); _actualizarCampanita();
       }).catch(function(e){alert('Error: '+e.message);});
@@ -1001,7 +993,6 @@
       var nombre=idx>=0?_prospectos[idx].nombre:'';
       if(idx>=0) _prospectos[idx].estado=nuevoEstado;
       var estLabel=(ESTADOS.find(function(e){return e.id===nuevoEstado;})||{label:nuevoEstado}).label;
-      tgEnviar('→ <b>Prospecto movido</b>: '+nombre+'\nNuevo estado: '+estLabel);
       _cerrarModal(); _renderVista(); _actualizarCampanita();
     });
   };
@@ -1013,44 +1004,102 @@
     if('Notification' in window && Notification.permission==='default') Notification.requestPermission();
   }
 
+  /* Tracks what we already notified to avoid duplicates */
+  var _tgNotificado = {};  // key → true
+
+  function _nombreVendedorEvento(e) {
+    if (!e.vendedor_id) return '';
+    var v = _vendedores.find(function(x){ return x.id === e.vendedor_id; });
+    return v ? v.nombre.toUpperCase() : '';
+  }
+
   function _chequearNotificaciones(){
     if(!('Notification' in window)||Notification.permission!=='granted') return;
-    var ahora=new Date();
-    var hoyIso=hoy();
+    var ahora  = new Date();
+    var hoyIso = hoy();
+    var ayerIso = (function(){ var d=new Date(); d.setDate(d.getDate()-1); return isoFecha(d); })();
 
-    // Recordatorios de eventos por reminder_min
+    // ── EVENTOS ──────────────────────────────────────────────
     _eventos.forEach(function(e){
-      if(e.completado||e.notificado||!e.fecha||!e.fecha.includes('T')) return;
-      var fechaEv=new Date(e.fecha);
-      var diffMin=Math.round((fechaEv-ahora)/60000);
-      var reminder=e.reminder_min||60;
-      // Disparar si faltan reminder_min ± 2 minutos
-      if(diffMin>=reminder-2 && diffMin<=reminder+2){
-        new Notification('⏰ Araguatos — Recordatorio: '+e.titulo,{
-          body: 'En '+(diffMin>=60?Math.round(diffMin/60)+'h':''+diffMin+' min')+': '+e.titulo+(e.descripcion?'\n'+e.descripcion:''),
-          icon:'logo.png'
+      if(e.completado || !e.fecha || !e.fecha.includes('T')) return;
+      var fechaEv  = new Date(e.fecha);
+      var diffMin  = Math.round((fechaEv - ahora) / 60000);
+      var reminder = e.reminder_min || 60;
+      var vend     = _nombreVendedorEvento(e);
+      var vendPre  = vend ? vend + ': ' : '';
+      var tipoLabel= e.tipo ? e.tipo.charAt(0).toUpperCase() + e.tipo.slice(1) : 'Evento';
+      var horaStr  = fmtHora(e.fecha);
+
+      // Recordatorio del navegador: cuando llega el tiempo configurado
+      if(diffMin >= reminder-2 && diffMin <= reminder+2){
+        new Notification('⏰ Araguatos — ' + e.titulo, {
+          body: (vend ? vend + ' · ' : '') + tipoLabel + (horaStr ? ' a las ' + horaStr : ''),
+          icon: 'logo.png'
         });
-        tgEnviar('⏰ <b>Recordatorio</b>: '+e.titulo+'\nEn '+(diffMin>=60?Math.round(diffMin/60)+'h':''+diffMin+' min'));
       }
 
-      // Eventos de hoy no notificados
-      if(isoFecha(e.fecha)===hoyIso && !e.notificado && diffMin<=0){
-        new Notification('📅 Araguatos — '+e.titulo,{body:e.descripcion||'Evento de hoy',icon:'logo.png'});
-        sbUpdate('eventos',e.id,{notificado:true}); e.notificado=true;
+      // Telegram: aviso el día anterior (entre 8:00 y 8:02 AM)
+      var keyDia = 'ev-dia-' + e.id;
+      var esFechaMañana = (function(){
+        var d = new Date(fechaEv); d.setDate(d.getDate()-1); return isoFecha(d) === hoyIso;
+      })();
+      var ahoraH = ahora.getHours(), ahoraM = ahora.getMinutes();
+      if(esFechaMañana && ahoraH===8 && ahoraM<=2 && !_tgNotificado[keyDia]){
+        _tgNotificado[keyDia] = true;
+        tgEnviar('📅 <b>Recordatorio — mañana</b> 👤 ' + vendPre + tipoLabel + ': <b>' + e.titulo + '</b> 🕐 ' + (horaStr || 'Hora no definida'));
+      }
+
+      // Telegram: recordatorio en el tiempo configurado (±2 min)
+      var keyMin = 'ev-min-' + e.id;
+      if(diffMin >= reminder-2 && diffMin <= reminder+2 && !_tgNotificado[keyMin]){
+        _tgNotificado[keyMin] = true;
+        var cuandoStr = reminder >= 1440 ? '1 día antes'
+          : reminder >= 60 ? 'en ' + Math.round(reminder/60) + 'h'
+          : 'en ' + reminder + ' min';
+        tgEnviar('⏰ <b>Recordatorio — ' + cuandoStr + '</b> 👤 ' + vendPre + tipoLabel + ': <b>' + e.titulo + '</b> 🕐 ' + (horaStr || '') + (e.descripcion ? ' 📝 ' + e.descripcion : ''));
+      }
+
+      // Notif navegador: evento que empieza ahora (±2 min)
+      if(diffMin >= -2 && diffMin <= 2 && !e.notificado){
+        new Notification('🔔 Araguatos — ¡Ahora! ' + e.titulo, {
+          body: (vend ? vend + ' · ' : '') + (e.descripcion || tipoLabel),
+          icon: 'logo.png'
+        });
+        sbUpdate('eventos', e.id, { notificado: true });
+        e.notificado = true;
       }
     });
 
-    // Pagos vencidos hoy
+    // ── PAGOS ─────────────────────────────────────────────────
     _pagos.forEach(function(p){
-      if(p.pagado||p.notificado||p.fecha_vence!==hoyIso) return;
-      var lote=window.S&&window.S.lots?window.S.lots.find(function(l){return l.id===p.lot_id;}):null;
-      new Notification('💳 Araguatos — Cuota vence hoy',{
-        body:'Lote '+p.lot_id+(lote?' · '+lote.buyer:'')+' · Cuota #'+p.num_cuota,icon:'logo.png'
-      });
+      if(p.pagado) return;
+      var dVence = diffDias(p.fecha_vence);
+      var lote   = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id === p.lot_id; }) : null;
+      var comprador = lote && lote.buyer ? lote.buyer.toUpperCase() : ('LOTE ' + p.lot_id);
+      var montoStr  = fmtMonto(p.monto);
+
+      // Telegram: aviso día anterior
+      var keyDia = 'pago-dia-' + p.id;
+      var ahoraH = ahora.getHours(), ahoraM = ahora.getMinutes();
+      if(dVence === 1 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyDia]){
+        _tgNotificado[keyDia] = true;
+        tgEnviar('💳 <b>Mañana vence una cuota</b> 👤 ' + comprador + ' — Lote ' + p.lot_id + ' Cuota #' + p.num_cuota + ' · ' + montoStr);
+      }
+
+      // Telegram + navegador: día del vencimiento
+      var keyHoy = 'pago-hoy-' + p.id;
+      if(dVence === 0 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyHoy]){
+        _tgNotificado[keyHoy] = true;
+        tgEnviar('🔴 <b>HOY vence una cuota</b> 👤 ' + comprador + ' — Lote ' + p.lot_id + ' Cuota #' + p.num_cuota + ' · ' + montoStr);
+        new Notification('💳 Araguatos — Cuota vence HOY', {
+          body: comprador + ' · Lote ' + p.lot_id + ' · Cuota #' + p.num_cuota + ' · ' + montoStr,
+          icon: 'logo.png'
+        });
+      }
     });
   }
 
-  // Chequear cada minuto para recordatorios precisos
+  // Chequear cada minuto
   setInterval(function(){ _chequearNotificaciones(); _actualizarCampanita(); }, 60000);
 
   /* ── Helper KPI ───────────────────────────────────────────── */
