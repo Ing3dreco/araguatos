@@ -8,7 +8,8 @@
      PROSPECTOS: Botón eliminar en cada card
      TELEGRAM : Notificaciones en tiempo real al grupo del equipo
    ═══════════════════════════════════════════════════════════════ */
-  var TG_CHAT_ID = '-5030514648';
+(function () { 
+var TG_CHAT_ID = '-5030514648';
 
 function tgEnviar(mensaje) {
   var url = sbUrl();
