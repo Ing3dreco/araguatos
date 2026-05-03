@@ -8,19 +8,26 @@
      PROSPECTOS: Botón eliminar en cada card
      TELEGRAM : Notificaciones en tiempo real al grupo del equipo
    ═══════════════════════════════════════════════════════════════ */
-
-(function () {
-
-  /* ── Telegram Config ──────────────────────────────────────────
-     Reemplaza estos valores con los tuyos:
-     TG_TOKEN  : el token que te dio BotFather
-     TG_CHAT_ID: el id del grupo (número negativo, ej: -1001234567890)
-  ─────────────────────────────────────────────────────────────── */
-  var TG_TOKEN   = '8737800495:AAHgsYZ274AXPdXxky8hfjjedgEy-idusus';
   var TG_CHAT_ID = '-5030514648';
 
-function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOKEN') return; fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: TG_CHAT_ID, text: mensaje, parse_mode: 'HTML' }) }).catch(function(e) { console.warn('[Telegram] Error:', e.message); });
-  }
+function tgEnviar(mensaje) {
+  var url = sbUrl();
+  if (!url) return;
+ 
+  // URL de la Edge Function — misma base que Supabase
+  var fnUrl = url.replace('/rest/v1', '') + '/functions/v1/send-telegram';
+  // Resultado: https://TU_REF.supabase.co/functions/v1/send-telegram
+ 
+  fetch(fnUrl, {
+    method: 'POST',
+    headers: Object.assign({}, sbHead(), { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ chat_id: TG_CHAT_ID, text: mensaje })
+  }).then(function(r) {
+    if (!r.ok) r.text().then(function(t) { console.warn('[Telegram] Edge Function error:', t); });
+  }).catch(function(e) {
+    console.warn('[Telegram] Error de red:', e.message);
+  });
+}
 
   /* ── Estado local ─────────────────────────────────────────── */
   var _pagos          = [];
@@ -1013,91 +1020,73 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
     return v ? v.nombre.toUpperCase() : '';
   }
 
-  function _chequearNotificaciones(){
-    if(!('Notification' in window)||Notification.permission!=='granted') return;
-    var ahora  = new Date();
-    var hoyIso = hoy();
-    var ayerIso = (function(){ var d=new Date(); d.setDate(d.getDate()-1); return isoFecha(d); })();
-
-    // ── EVENTOS ──────────────────────────────────────────────
-    _eventos.forEach(function(e){
-      if(e.completado || !e.fecha || !e.fecha.includes('T')) return;
-      var fechaEv  = new Date(e.fecha);
-      var diffMin  = Math.round((fechaEv - ahora) / 60000);
-      var reminder = e.reminder_min || 60;
-      var vend     = _nombreVendedorEvento(e);
-      var vendPre  = vend ? vend + ': ' : '';
-      var tipoLabel= e.tipo ? e.tipo.charAt(0).toUpperCase() + e.tipo.slice(1) : 'Evento';
-      var horaStr  = fmtHora(e.fecha);
-
-      // Recordatorio del navegador: cuando llega el tiempo configurado
-      if(diffMin >= reminder-2 && diffMin <= reminder+2){
-        new Notification('⏰ Araguatos — ' + e.titulo, {
-          body: (vend ? vend + ' · ' : '') + tipoLabel + (horaStr ? ' a las ' + horaStr : ''),
-          icon: 'logo.png'
-        });
-      }
-
-      // Telegram: aviso el día anterior (entre 8:00 y 8:02 AM)
-      var keyDia = 'ev-dia-' + e.id;
-      var esFechaMañana = (function(){
-        var d = new Date(fechaEv); d.setDate(d.getDate()-1); return isoFecha(d) === hoyIso;
-      })();
-      var ahoraH = ahora.getHours(), ahoraM = ahora.getMinutes();
-      if(esFechaMañana && ahoraH===8 && ahoraM<=2 && !_tgNotificado[keyDia]){
-        _tgNotificado[keyDia] = true;
-        tgEnviar('📅 <b>Recordatorio — mañana</b> 👤 ' + vendPre + tipoLabel + ': <b>' + e.titulo + '</b> 🕐 ' + (horaStr || 'Hora no definida'));
-      }
-
-      // Telegram: recordatorio en el tiempo configurado (±2 min)
-      var keyMin = 'ev-min-' + e.id;
-      if(diffMin >= reminder-2 && diffMin <= reminder+2 && !_tgNotificado[keyMin]){
-        _tgNotificado[keyMin] = true;
-        var cuandoStr = reminder >= 1440 ? '1 día antes'
-          : reminder >= 60 ? 'en ' + Math.round(reminder/60) + 'h'
-          : 'en ' + reminder + ' min';
-        tgEnviar('⏰ <b>Recordatorio — ' + cuandoStr + '</b> 👤 ' + vendPre + tipoLabel + ': <b>' + e.titulo + '</b> 🕐 ' + (horaStr || '') + (e.descripcion ? ' 📝 ' + e.descripcion : ''));
-      }
-
-      // Notif navegador: evento que empieza ahora (±2 min)
-      if(diffMin >= -2 && diffMin <= 2 && !e.notificado){
-        new Notification('🔔 Araguatos — ¡Ahora! ' + e.titulo, {
-          body: (vend ? vend + ' · ' : '') + (e.descripcion || tipoLabel),
-          icon: 'logo.png'
-        });
-        sbUpdate('eventos', e.id, { notificado: true });
-        e.notificado = true;
-      }
-    });
-
-    // ── PAGOS ─────────────────────────────────────────────────
-    _pagos.forEach(function(p){
-      if(p.pagado) return;
-      var dVence = diffDias(p.fecha_vence);
-      var lote   = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id === p.lot_id; }) : null;
-      var comprador = lote && lote.buyer ? lote.buyer.toUpperCase() : ('LOTE ' + p.lot_id);
-      var montoStr  = fmtMonto(p.monto);
-
-      // Telegram: aviso día anterior
-      var keyDia = 'pago-dia-' + p.id;
-      var ahoraH = ahora.getHours(), ahoraM = ahora.getMinutes();
-      if(dVence === 1 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyDia]){
-        _tgNotificado[keyDia] = true;
-        tgEnviar('💳 <b>Mañana vence una cuota</b> 👤 ' + comprador + ' — Lote ' + p.lot_id + ' Cuota #' + p.num_cuota + ' · ' + montoStr);
-      }
-
-      // Telegram + navegador: día del vencimiento
-      var keyHoy = 'pago-hoy-' + p.id;
-      if(dVence === 0 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyHoy]){
-        _tgNotificado[keyHoy] = true;
-        tgEnviar('🔴 <b>HOY vence una cuota</b> 👤 ' + comprador + ' — Lote ' + p.lot_id + ' Cuota #' + p.num_cuota + ' · ' + montoStr);
-        new Notification('💳 Araguatos — Cuota vence HOY', {
-          body: comprador + ' · Lote ' + p.lot_id + ' · Cuota #' + p.num_cuota + ' · ' + montoStr,
-          icon: 'logo.png'
-        });
-      }
-    });
-  }
+ function _chequearNotificaciones() {
+  // Solo notificaciones del navegador — Telegram va por el cron
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+ 
+  var ahora   = new Date();
+  var hoyIso  = hoy();
+ 
+  // ── EVENTOS: notificación del navegador cuando empieza ────
+  _eventos.forEach(function(e) {
+    if (e.completado || !e.fecha || !e.fecha.includes('T')) return;
+ 
+    var fechaEv = new Date(e.fecha);
+    var diffMin = Math.round((fechaEv - ahora) / 60000);
+    var tipoLabel = e.tipo
+      ? e.tipo.charAt(0).toUpperCase() + e.tipo.slice(1)
+      : 'Evento';
+ 
+    // Notificación del navegador según el recordatorio configurado
+    var reminder = e.reminder_min || 60;
+    var keyMin   = 'nav-ev-min-' + e.id;
+    if (Math.abs(diffMin - reminder) <= 2 && !_tgNotificado[keyMin]) {
+      _tgNotificado[keyMin] = true;
+      var cuandoStr = reminder >= 1440 ? 'en 1 día'
+        : reminder >= 60 ? 'en ' + Math.round(reminder / 60) + 'h'
+        : 'en ' + reminder + 'min';
+      new Notification('⏰ Araguatos — ' + cuandoStr + ': ' + e.titulo, {
+        body: tipoLabel + (fmtHora(e.fecha) ? ' a las ' + fmtHora(e.fecha) : ''),
+        icon: 'logo.png'
+      });
+    }
+ 
+    // Notificación cuando el evento empieza (±2 min)
+    var keyAhora = 'nav-ev-ahora-' + e.id;
+    if (diffMin >= -2 && diffMin <= 2 && !_tgNotificado[keyAhora]) {
+      _tgNotificado[keyAhora] = true;
+      new Notification('🔔 ¡Ahora! ' + e.titulo, {
+        body: (e.descripcion || tipoLabel),
+        icon: 'logo.png'
+      });
+      // Marcar como notificado en Supabase para no repetir
+      sbUpdate('eventos', e.id, { notificado: true });
+      e.notificado = true;
+    }
+  });
+ 
+  // ── PAGOS: notificación del navegador el día del vencimiento ─
+  _pagos.forEach(function(p) {
+    if (p.pagado) return;
+    var dVence   = diffDias(p.fecha_vence);
+    var keyHoy   = 'nav-pago-hoy-' + p.id;
+    var ahoraH   = ahora.getHours();
+    var ahoraM   = ahora.getMinutes();
+ 
+    // Solo una vez al día, a las 8 AM ±2 min
+    if (dVence === 0 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyHoy]) {
+      _tgNotificado[keyHoy] = true;
+      var lote = window.S && window.S.lots
+        ? window.S.lots.find(function(l) { return l.id === p.lot_id; })
+        : null;
+      var comprador = lote && lote.buyer ? lote.buyer : 'Lote ' + p.lot_id;
+      new Notification('💳 Araguatos — Cuota vence HOY', {
+        body: comprador + ' · Cuota #' + p.num_cuota + ' · ' + fmtMonto(p.monto),
+        icon: 'logo.png'
+      });
+    }
+  });
+}
 
   // Chequear cada minuto
   setInterval(function(){ _chequearNotificaciones(); _actualizarCampanita(); }, 60000);
