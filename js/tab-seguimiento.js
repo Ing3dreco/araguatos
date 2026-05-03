@@ -805,7 +805,7 @@
   window._segEditarCuota=function(pagoId){
     var pago=_pagos.find(function(p){return p.id===pagoId;}); if(!pago) return;
     var body=
-      _inp('segCuotaFecha','Fecha de vencimiento','date',pago.fecha_vence||','') +
+      _inp('segCuotaFecha','Fecha de vencimiento','date',pago.fecha_vence||'','') +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto (en MILLONES COP — ej: 1.5 = $1.500.000)</label>' +
       '<input id="segCuotaMonto" type="number" step="0.0001" value="'+(pago.monto||'')+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
       '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCuotaMontoPreview"></div>';
@@ -935,7 +935,7 @@
       ESTADOS.map(function(e){return '<option value="'+e.id+'"'+(d.estado===e.id?' selected':'')+'>'+e.label+'</option>';}).join('')+'</select>' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Vendedor asignado</label>' +
       '<select id="segPrVendedor" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">'+optsVend+'</select>' +
-      _inp('segPrFollow','Próximo seguimiento','date',d.next_follow||','') +
+      _inp('segPrFollow','Próximo seguimiento','date',d.next_follow||'','') +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Notas</label>' +
       '<textarea id="segPrNotas" rows="3" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box;resize:vertical">'+(d.notas||'')+'</textarea>';
 
