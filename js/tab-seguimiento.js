@@ -827,7 +827,10 @@ function _abrirModalEvento(e, fechaPresel) {
     var datos = {
       tipo         : document.getElementById('segEvTipo').value,
       titulo       : titulo,
-      fecha        : fechaInput,
+      // Convertir hora local Colombia a UTC explícitamente
+// fechaInput viene como "2026-05-03T20:36" (hora local)
+// Supabase lo guarda como UTC, así que debemos agregar el offset Colombia (-05:00)
+      fecha: fechaInput ? fechaInput + ':00-05:00' : null,
       reminder_min : reminderMin,
       vendedor_id  : document.getElementById('segEvVendedor').value || null,
       descripcion  : document.getElementById('segEvDesc').value.trim(),
