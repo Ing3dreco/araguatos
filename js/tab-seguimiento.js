@@ -916,6 +916,33 @@ function _abrirModalEvento(e, fechaPresel) {
   }, 80);
 }
 
+  /* Completar / Revertir / Eliminar eventos */
+  window._segCompletarEvento = function(id) {
+    sbUpdate('eventos', id, { completado: true }).then(function() {
+      var idx = _eventos.findIndex(function(e) { return e.id === id; });
+      if (idx >= 0) _eventos[idx].completado = true;
+      _renderVista(); _actualizarCampanita();
+    }).catch(function(e) { alert('Error: ' + e.message); });
+  };
+
+  window._segRevertirEvento = function(id) {
+    sbUpdate('eventos', id, { completado: false }).then(function() {
+      var idx = _eventos.findIndex(function(e) { return e.id === id; });
+      if (idx >= 0) _eventos[idx].completado = false;
+      _renderVista(); _actualizarCampanita();
+    }).catch(function(e) { alert('Error: ' + e.message); });
+  };
+
+  window._segEliminarEvento = function(id) {
+    var ev = _eventos.find(function(e) { return e.id === id; });
+    if (!confirm('\u00BFEliminar el evento "' + (ev ? ev.titulo : '') + '"? Esta acci\u00F3n no se puede deshacer.')) return;
+    sbDelete('eventos', id).then(function() {
+      _eventos = _eventos.filter(function(e) { return e.id !== id; });
+      _renderVista(); _actualizarCampanita();
+    }).catch(function(e) { alert('Error al eliminar: ' + e.message); });
+  };
+
+
   /* ══════════════════════════════════════════════════════════
      NOTIFICACIONES DEL NAVEGADOR + RECORDATORIOS DE EVENTOS
   ══════════════════════════════════════════════════════════ */
