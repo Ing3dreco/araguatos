@@ -830,7 +830,7 @@ function _abrirModalEvento(e, fechaPresel) {
       // Convertir hora local Colombia a UTC explícitamente
 // fechaInput viene como "2026-05-03T20:36" (hora local)
 // Supabase lo guarda como UTC, así que debemos agregar el offset Colombia (-05:00)
-      fecha: fechaInput ? fechaInput + ':00-05:00' : null,
+      fecha: fechaInput || null,
       reminder_min : reminderMin,
       vendedor_id  : document.getElementById('segEvVendedor').value || null,
       descripcion  : document.getElementById('segEvDesc').value.trim(),
@@ -914,7 +914,221 @@ function _abrirModalEvento(e, fechaPresel) {
  
     updatePreview();
   }, 80);
-}
+} // fin _abrirModalEvento
+
+  /* ══════════════════════════════════════════════════════════
+     ACCIONES — PAGOS
+  ══════════════════════════════════════════════════════════ */
+  window._segRegistrarPago = function(pagoId) {
+    var pago = _pagos.find(function(p){ return p.id === pagoId; });
+    if (!pago) return;
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de pago</label>' +
+      '<input id="segPagoFecha" type="date" value="' + hoy() + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto (en millones COP)</label>' +
+      '<input id="segPagoMonto" type="number" step="0.0001" value="' + (pago.monto || '') + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+      '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segPagoMontoPreview"></div>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nota / Comprobante</label>' +
+      '<input id="segPagoNota" type="text" value="" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
+    _abrirModal('✓ Registrar pago — Cuota #' + pago.num_cuota, body, function() {
+      var fechaPago = document.getElementById('segPagoFecha').value;
+      var montoVal  = parseFloat(document.getElementById('segPagoMonto').value) || pago.monto;
+      var nota      = document.getElementById('segPagoNota').value.trim();
+      sbUpdate('pagos', pagoId, { pagado: true, fecha_pago: fechaPago || hoy(), monto: montoVal, nota: nota })
+        .then(function() {
+          var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
+          if (idx >= 0) { _pagos[idx].pagado = true; _pagos[idx].fecha_pago = fechaPago || hoy(); _pagos[idx].monto = montoVal; _pagos[idx].nota = nota; }
+          _cerrarModal(); _renderVista(); _actualizarCampanita();
+        }).catch(function(e){ alert('Error: ' + e.message); });
+    });
+    setTimeout(function() {
+      var inp  = document.getElementById('segPagoMonto');
+      var prev = document.getElementById('segPagoMontoPreview');
+      if (!inp || !prev) return;
+      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
+      inp.addEventListener('input', act); act();
+    }, 100);
+  };
+
+  window._segDesmarcarPago = function(pagoId) {
+    if (!confirm('¿Desmarcar este pago como no realizado?')) return;
+    sbUpdate('pagos', pagoId, { pagado: false, fecha_pago: null, nota: '' }).then(function() {
+      var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
+      if (idx >= 0) { _pagos[idx].pagado = false; _pagos[idx].fecha_pago = null; }
+      _renderVista(); _actualizarCampanita();
+    });
+  };
+
+  window._segEditarCuota = function(pagoId) {
+    var pago = _pagos.find(function(p){ return p.id === pagoId; });
+    if (!pago) return;
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de vencimiento</label>' +
+      '<input id="segCuotaFecha" type="date" value="' + (pago.fecha_vence || '') + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto (en millones COP)</label>' +
+      '<input id="segCuotaMonto" type="number" step="0.0001" value="' + (pago.monto || '') + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+      '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCuotaMontoPreview"></div>';
+    _abrirModal('✏️ Editar cuota #' + pago.num_cuota + ' — Lote ' + pago.lot_id, body, function() {
+      var nuevaFecha  = document.getElementById('segCuotaFecha').value;
+      var nuevoMonto  = parseFloat(document.getElementById('segCuotaMonto').value);
+      if (!nuevaFecha) { alert('La fecha es obligatoria.'); return; }
+      if (isNaN(nuevoMonto) || nuevoMonto <= 0) { alert('Ingresa un monto válido.'); return; }
+      sbUpdate('pagos', pagoId, { fecha_vence: nuevaFecha, monto: nuevoMonto }).then(function() {
+        var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
+        if (idx >= 0) { _pagos[idx].fecha_vence = nuevaFecha; _pagos[idx].monto = nuevoMonto; }
+        _cerrarModal(); _renderVista();
+      }).catch(function(e){ alert('Error: ' + e.message); });
+    });
+    setTimeout(function() {
+      var inp  = document.getElementById('segCuotaMonto');
+      var prev = document.getElementById('segCuotaMontoPreview');
+      if (!inp || !prev) return;
+      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
+      inp.addEventListener('input', act); act();
+    }, 100);
+  };
+
+  /* ══════════════════════════════════════════════════════════
+     ACCIONES — PROSPECTOS
+  ══════════════════════════════════════════════════════════ */
+  window._segNuevoProspecto = function(datos) {
+    var d = datos || {};
+    var optsVend = '<option value="">— Sin vendedor asignado —</option>' +
+      _vendedores.map(function(v){ return '<option value="' + v.id + '"' + (d.vendedor_id === v.id ? ' selected' : '') + '>' + v.nombre + '</option>'; }).join('');
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nombre completo *</label>' +
+      '<input id="segPrNombre" type="text" value="' + (d.nombre || '') + '" placeholder="Ej: Carlos Ramírez" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Teléfono</label>' +
+      '<input id="segPrTel" type="tel" value="' + (d.telefono || '') + '" placeholder="Ej: 3001234567" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Estado</label>' +
+      '<select id="segPrEstado" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      ESTADOS.map(function(e){ return '<option value="' + e.id + '"' + (d.estado === e.id ? ' selected' : '') + '>' + e.label + '</option>'; }).join('') + '</select>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Vendedor asignado</label>' +
+      '<select id="segPrVendedor" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' + optsVend + '</select>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Próximo seguimiento</label>' +
+      '<input id="segPrFollow" type="date" value="' + (d.next_follow || '') + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Notas</label>' +
+      '<textarea id="segPrNotas" rows="3" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box;resize:vertical">' + (d.notas || '') + '</textarea>';
+
+    _abrirModal((d.id ? '✏️ Editar prospecto' : '👥 Nuevo prospecto'), body, function() {
+      var nombre = (document.getElementById('segPrNombre').value || '').trim();
+      if (!nombre) { alert('El nombre es obligatorio.'); return; }
+      var payload = {
+        nombre      : nombre,
+        telefono    : document.getElementById('segPrTel').value.trim(),
+        estado      : document.getElementById('segPrEstado').value,
+        vendedor_id : document.getElementById('segPrVendedor').value || null,
+        next_follow : document.getElementById('segPrFollow').value || null,
+        notas       : document.getElementById('segPrNotas').value.trim(),
+        updated_at  : new Date().toISOString()
+      };
+      var op = d.id ? sbUpdate('prospectos', d.id, payload) : sbInsert('prospectos', payload);
+      op.then(function(res) {
+        if (d.id) {
+          var idx = _prospectos.findIndex(function(p){ return p.id === d.id; });
+          if (idx >= 0) _prospectos[idx] = Object.assign(_prospectos[idx], payload);
+        } else {
+          if (Array.isArray(res)) _prospectos = res.concat(_prospectos);
+        }
+        _cerrarModal(); _renderVista(); _actualizarCampanita();
+      }).catch(function(e){ alert('Error: ' + e.message); });
+    });
+  };
+
+  window._segEditarProspecto = function(id) {
+    var p = _prospectos.find(function(x){ return x.id === id; });
+    if (p) window._segNuevoProspecto(p);
+  };
+
+  window._segEliminarProspecto = function(id) {
+    var p = _prospectos.find(function(x){ return x.id === id; });
+    if (!confirm('¿Eliminar el prospecto "' + (p ? p.nombre : '') + '"? Esta acción no se puede deshacer.')) return;
+    sbDelete('prospectos', id).then(function() {
+      _prospectos = _prospectos.filter(function(x){ return x.id !== id; });
+      _renderVista(); _actualizarCampanita();
+    }).catch(function(e){ alert('Error al eliminar: ' + e.message); });
+  };
+
+  window._segMoverProspecto = function(id) {
+    var p = _prospectos.find(function(x){ return x.id === id; });
+    if (!p) return;
+    var body = '<div style="font-size:13px;margin-bottom:14px;color:#555">Mover <b>' + p.nombre + '</b> a:</div>' +
+      '<div style="display:flex;flex-direction:column;gap:8px">' +
+      ESTADOS.map(function(est) {
+        var esActual = est.id === p.estado;
+        return '<button onclick="window._segCambiarEstado(\'' + id + '\',\'' + est.id + '\')" ' +
+          'style="padding:10px 14px;border-radius:8px;border:2px solid ' + (esActual ? est.color : '#ddd') + ';' +
+          'background:' + (esActual ? est.bg : '#fff') + ';color:' + (esActual ? est.color : '#555') + ';' +
+          'font-weight:' + (esActual ? '800' : '500') + ';font-size:13px;cursor:pointer;text-align:left">' +
+          est.label + (esActual ? ' ← actual' : '') + '</button>';
+      }).join('') + '</div>';
+    var overlay = document.getElementById('segModal');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'segModal';
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9500;display:flex;align-items:center;justify-content:center';
+      overlay.addEventListener('click', function(e){ if (e.target === overlay) _cerrarModal(); });
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = '<div style="background:#fff;border-radius:14px;padding:24px;width:380px;max-width:94vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
+      '<div style="font-size:15px;font-weight:800;color:#1a237e">Cambiar estado</div>' +
+      '<button onclick="window._segCerrarModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888">✕</button>' +
+      '</div>' + body + '</div>';
+    overlay.style.display = 'flex';
+  };
+
+  window._segCambiarEstado = function(id, nuevoEstado) {
+    sbUpdate('prospectos', id, { estado: nuevoEstado, updated_at: new Date().toISOString() }).then(function() {
+      var idx = _prospectos.findIndex(function(p){ return p.id === id; });
+      if (idx >= 0) _prospectos[idx].estado = nuevoEstado;
+      _cerrarModal(); _renderVista(); _actualizarCampanita();
+    });
+  };
+
+  window._segCambiarVendedor = function(id) { _vendedorActivo = id || null; _renderVista(); };
+
+  window._segGestionarVendedores = function() {
+    var lista = _vendedores.map(function(v) {
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:#f5f5f5;margin-bottom:6px">' +
+        '<span style="font-size:13px;font-weight:600">👤 ' + v.nombre + '</span>' +
+        '<button onclick="window._segEliminarVendedor(\'' + v.id + '\')" style="background:none;border:none;cursor:pointer;color:#c62828;font-size:13px">🗑</button>' +
+        '</div>';
+    }).join('') || '<div style="font-size:12px;color:#999;text-align:center;padding:10px">Sin vendedores registrados</div>';
+    var body = '<div style="margin-bottom:14px">' + lista + '</div>' +
+      '<div style="border-top:1px solid #eee;padding-top:12px">' +
+      '<div style="font-size:12px;font-weight:700;color:#444;margin-bottom:8px">Registrar nuevo vendedor</div>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nombre completo</label>' +
+      '<input id="segVendNombre" type="text" placeholder="Ej: Carlos Ramírez" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Teléfono (opcional)</label>' +
+      '<input id="segVendTel" type="tel" placeholder="Ej: 3001234567" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<button id="segBtnAddVend" class="btn bg bsm" style="width:100%">+ Agregar vendedor</button>' +
+      '</div>';
+    _abrirModal('⚙️ Gestión de vendedores', body, function(){ _cerrarModal(); });
+    setTimeout(function() {
+      var btn = document.getElementById('segBtnAddVend');
+      if (!btn) return;
+      btn.onclick = function() {
+        var nombre = (document.getElementById('segVendNombre').value || '').trim();
+        var tel    = (document.getElementById('segVendTel').value || '').trim();
+        if (!nombre) { alert('El nombre es obligatorio.'); return; }
+        sbInsert('vendedores', { nombre: nombre, telefono: tel }).then(function(res) {
+          if (Array.isArray(res)) _vendedores = _vendedores.concat(res);
+          window._segGestionarVendedores(); _renderVista();
+        }).catch(function(e){ alert('Error: ' + e.message); });
+      };
+    }, 100);
+  };
+
+  window._segEliminarVendedor = function(id) {
+    var v = _vendedores.find(function(x){ return x.id === id; });
+    if (!confirm('¿Eliminar al vendedor "' + (v ? v.nombre : '') + '"?')) return;
+    sbDelete('vendedores', id).then(function() {
+      _vendedores = _vendedores.filter(function(x){ return x.id !== id; });
+      if (_vendedorActivo === id) _vendedorActivo = null;
+      window._segGestionarVendedores(); _renderVista();
+    });
+  };
 
   /* Completar / Revertir / Eliminar eventos */
   window._segCompletarEvento = function(id) {
