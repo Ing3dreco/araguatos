@@ -8,26 +8,35 @@
      PROSPECTOS: Botón eliminar en cada card
      TELEGRAM : Notificaciones en tiempo real al grupo del equipo
    ═══════════════════════════════════════════════════════════════ */
+(function () { 
+var TG_CHAT_ID = '-5030514648';
 
-(function () {
-
-  /* ── Telegram Config ──────────────────────────────────────────
-     Reemplaza estos valores con los tuyos:
-     TG_TOKEN  : el token que te dio BotFather
-     TG_CHAT_ID: el id del grupo (número negativo, ej: -1001234567890)
-  ─────────────────────────────────────────────────────────────── */
-  var TG_TOKEN   = '8737800495:AAHgsYZ274AXPdXxky8hfjjedgEy-idusus';
-  var TG_CHAT_ID = '-5030514648';
-
-function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOKEN') return; fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: TG_CHAT_ID, text: mensaje, parse_mode: 'HTML' }) }).catch(function(e) { console.warn('[Telegram] Error:', e.message); });
-  }
+function tgEnviar(mensaje) {
+  var url = sbUrl();
+  if (!url) return;
+ 
+  // URL de la Edge Function — misma base que Supabase
+  var fnUrl = url.replace('/rest/v1', '') + '/functions/v1/send-telegram';
+  // Resultado: https://TU_REF.supabase.co/functions/v1/send-telegram
+ 
+  fetch(fnUrl, {
+    method: 'POST',
+    headers: Object.assign({}, sbHead(), { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ chat_id: TG_CHAT_ID, text: mensaje })
+  }).then(function(r) {
+    if (!r.ok) r.text().then(function(t) { console.warn('[Telegram] Edge Function error:', t); });
+  }).catch(function(e) {
+    console.warn('[Telegram] Error de red:', e.message);
+  });
+}
 
   /* ── Estado local ─────────────────────────────────────────── */
   var _pagos          = [];
   var _prospectos     = [];
   var _eventos        = [];
   var _vendedores     = [];
-  var _vendedorActivo = null;
+  var _vendedorActivo  = null;   // filtro prospectos
+  var _vendedorAgenda  = null;   // filtro agenda
   var _vistaActiva    = 'agenda';
   var _mesActual      = new Date();
   var _diaSeleccionado = null;
@@ -231,7 +240,7 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
 
     // PROSPECTOS: seguimientos atrasados o para hoy/mañana
     _prospectos.forEach(function(p) {
-      if (p.estado==='cerrado'||p.estado==='perdido'||!p.next_follow) return;
+      if (p.estado==='cerrado'||p.estado==='perdido'||p.estado==='referidos'||!p.next_follow) return;
       var d = diffDias(p.next_follow);
       if (d <= 1) {
         var cuando = d<0?'atrasado '+Math.abs(d)+' día(s)':d===0?'HOY':'mañana';
@@ -368,21 +377,45 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
      VISTA 1 — AGENDA
   ══════════════════════════════════════════════════════════ */
   function _renderAgenda(c) {
-    var hoyIso     = hoy();
-    var evHoy      = _eventos.filter(function(e){ return isoFecha(e.fecha)===hoyIso && !e.completado; });
-    var evProx     = _eventos.filter(function(e){ var d=diffDias(isoFecha(e.fecha)); return d>=0&&d<=7&&!e.completado; });
-    var evVencidos = _eventos.filter(function(e){ return diffDias(isoFecha(e.fecha))<0&&!e.completado; });
+    var hoyIso = hoy();
 
-    var panelLateral = _diaSeleccionado ? _panelDia(_diaSeleccionado) : _panelProximos();
+    /* Filtrar eventos por vendedor seleccionado en agenda */
+    var evsFiltrados = _vendedorAgenda
+      ? _eventos.filter(function(e){ return e.vendedor_id === _vendedorAgenda; })
+      : _eventos;
+
+    var evHoy      = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===hoyIso && !e.completado; });
+    var evProx     = evsFiltrados.filter(function(e){ var d=diffDias(isoFecha(e.fecha)); return d>=0&&d<=7&&!e.completado; });
+    var evVencidos = evsFiltrados.filter(function(e){ return diffDias(isoFecha(e.fecha))<0&&!e.completado; });
+
+    var panelLateral = _diaSeleccionado ? _panelDia(_diaSeleccionado, evsFiltrados) : _panelProximos(evsFiltrados);
+
+    /* Selector de vendedor para agenda */
+    var optsAgenda = '<option value="">👥 Todos los vendedores</option>' +
+      _vendedores.map(function(v){
+        return '<option value="'+v.id+'"'+(_vendedorAgenda===v.id?' selected':'')+'>'+v.nombre+'</option>';
+      }).join('');
+    var vendAgendaNombre = '';
+    if (_vendedorAgenda) {
+      var va = _vendedores.find(function(v){ return v.id===_vendedorAgenda; });
+      vendAgendaNombre = va ? ' — 👤 ' + va.nombre : '';
+    }
 
     c.innerHTML =
+      /* Barra filtro vendedor */
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
+      '<select id="segFiltroAgendaVend" onchange="window._segCambiarVendedorAgenda(this.value)" ' +
+      'style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;background:#fff">' +
+      optsAgenda + '</select>' +
+      '<div style="font-size:13px;font-weight:700;color:#1a237e">Agenda' + vendAgendaNombre + '</div>' +
+      '</div>' +
       '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">' +
       _kpiBox('🔴 Vencidos', evVencidos.length, '#ffebee','#c62828') +
       _kpiBox('🟡 Hoy',      evHoy.length,      '#fff3e0','#e65100') +
       _kpiBox('🔵 Próx. 7d', evProx.length,     '#e3f2fd','#1565c0') +
       '</div>' +
       '<div style="display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start">' +
-      '<div class="card" style="padding:16px">'+_buildCalendario()+'</div>' +
+      '<div class="card" style="padding:16px">'+_buildCalendario(evsFiltrados)+'</div>' +
       '<div>'+panelLateral+'</div>' +
       '</div>';
 
@@ -397,8 +430,9 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
     _pedirPermisoNotificacion();
   }
 
-  function _panelDia(isoD) {
-    var evsDia = _eventos.filter(function(e){ return isoFecha(e.fecha)===isoD; })
+  function _panelDia(isoD, evsFiltrados) {
+    var evsFiltrados = evsFiltrados || _eventos;
+    var evsDia = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===isoD; })
       .sort(function(a,b){ return (a.fecha||'')>(b.fecha||'')?1:-1; });
     var label = isoD===hoy()?'Hoy':fmtFecha(isoD);
     return '<div class="card" style="padding:14px">' +
@@ -414,8 +448,9 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
       )+'</div>';
   }
 
-  function _panelProximos() {
-    var proximos = _eventos.filter(function(e){
+  function _panelProximos(evsFiltrados) {
+    var evsFiltrados = evsFiltrados || _eventos;
+    var proximos = evsFiltrados.filter(function(e){
       var d=diffDias(isoFecha(e.fecha)); return d>=-1&&d<=14;
     }).sort(function(a,b){ return (a.fecha||'')>(b.fecha||'')?1:-1; });
     return '<div class="card" style="padding:14px">' +
@@ -430,11 +465,12 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
   }
 
   /* ── Calendario ───────────────────────────────────────────── */
-  function _buildCalendario() {
+  function _buildCalendario(evsFiltrados) {
+    var evsFiltrados = evsFiltrados || _eventos;
     var anio=_mesActual.getFullYear(), mes=_mesActual.getMonth(), hoyIso=hoy();
     var primerDia=new Date(anio,mes,1).getDay(), diasMes=new Date(anio,mes+1,0).getDate();
     var evMes={};
-    _eventos.forEach(function(e){
+    evsFiltrados.forEach(function(e){
       var eIso=isoFecha(e.fecha);
       if(eIso.slice(0,7)===anio+'-'+_pad(mes+1)){
         var d=parseInt(eIso.slice(8,10));
@@ -547,10 +583,38 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
     var pagadas=cuotas.filter(function(p){return p.pagado;}).length;
     var totalC=cuotas.length||lote.mo||0;
     var pct=totalC>0?Math.round(pagadas/totalC*100):0;
+
+    /* Cuota inicial del lote */
+    var precio  = Number(lote.salePrice) || 0;
+    var dnAmt   = Number(lote.dnAmt)     || precio * (lote.dn || 20) / 100;
+    var dnPagado= lote.dnPagado || false;
+    var dnFecha = lote.dnFecha  || lote.saleDate || null;
+    var dnNota  = lote.dnNota   || '';
+
+    /* Fila cuota inicial */
+    var sDn = dnPagado
+      ? { color:'#2e7d32', bg:'#e8f5e9', icono:'✅', label:'Pagado' }
+      : { color:'#1565c0', bg:'#e3f2fd', icono:'🔵', label:'Pendiente' };
+
+    var filaCuotaInicial =
+      '<tr style="border-top:2px solid #1565c0;background:#f0f4ff">' +
+      '<td style="padding:7px 10px;font-weight:800;color:#1565c0">CI</td>' +
+      '<td style="padding:7px 10px;color:#1565c0;font-weight:600">' + (dnFecha ? fmtFecha(dnFecha) : '— (ingreso)') + '</td>' +
+      '<td style="padding:7px 10px;text-align:right;font-weight:800;color:#1565c0">' + fmtMonto(dnAmt) + '</td>' +
+      '<td style="padding:7px 10px;text-align:center"><span style="background:'+sDn.bg+';color:'+sDn.color+';padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700">'+sDn.icono+' '+sDn.label+'</span></td>' +
+      '<td style="padding:7px 10px;color:#888">' + (dnPagado && dnFecha ? fmtFecha(dnFecha) : '—') + '</td>' +
+      '<td style="padding:7px 10px;color:#888;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (dnNota || '—') + '</td>' +
+      '<td style="padding:7px 10px;text-align:center;white-space:nowrap">' +
+      '<button class="btn bout bsm" onclick="window._segEditarCuotaInicial(\''+lote.id+'\')" style="font-size:11px;padding:4px 8px;margin-right:4px">✏️</button>' +
+      (!dnPagado
+        ? '<button class="btn bg bsm" onclick="window._segPagarCuotaInicial(\''+lote.id+'\')" style="font-size:11px;padding:4px 10px">✓ Pagar</button>'
+        : '<button class="btn bout bsm" onclick="window._segDesmarcarCI(\''+lote.id+'\')" style="font-size:11px;padding:4px 10px;color:#888">↩</button>'
+      ) + '</td></tr>';
+
     return '<div class="card" style="margin-bottom:12px">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">' +
       '<div><div style="font-size:14px;font-weight:800;color:#1a237e">Lote '+lote.id+' — '+(lote.buyer||'—')+'</div>' +
-      '<div style="font-size:11px;color:#666;margin-top:2px">C.C. '+(lote.cc||'—')+' · '+(lote.phone||'—')+' · '+(lote.mo||'—')+' meses</div></div>' +
+      '<div style="font-size:11px;color:#666;margin-top:2px">C.C. '+(lote.cc||'—')+' · '+(lote.phone||'—')+' · '+(lote.mo||'—')+' meses · CI: '+fmtMonto(dnAmt)+'</div></div>' +
       '<div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#2e7d32">'+pagadas+'/'+totalC+' cuotas</div>' +
       '<div style="font-size:11px;color:#888">'+pct+'% pagado</div></div></div>' +
       '<div style="height:6px;background:#e0e0e0;border-radius:3px;margin-bottom:12px">' +
@@ -567,6 +631,7 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
         '<th style="padding:7px 10px;text-align:left">Nota</th>' +
         '<th style="padding:7px 10px;text-align:center">Acción</th>' +
         '</tr></thead><tbody>' +
+        filaCuotaInicial +
         cuotas.map(function(p){
           var s=semaforo(p);
           return '<tr style="border-top:1px solid #f0f0f0">' +
@@ -595,7 +660,7 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
     {id:'presentacion',label:'📋 Presentación', color:'#6a1b9a',bg:'#f3e5f5'},
     {id:'negociacion', label:'🤝 Negociación',  color:'#e65100',bg:'#fff3e0'},
     {id:'cerrado',     label:'✅ Cerrado',       color:'#2e7d32',bg:'#e8f5e9'},
-    {id:'perdido',     label:'❌ Perdido',        color:'#757575',bg:'#f5f5f5'},
+    {id:'perdido',     label:'❌ Dame Referidos',  color:'#757575',bg:'#f5f5f5'},
   ];
 
   function _renderProspectos(c) {
@@ -698,310 +763,557 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
   };
 
   /* Opciones de recordatorio: 1h, 2h, 4h, 8h, 24h */
-  var REMINDER_OPTS=[
-    {val:60,  label:'1 hora antes'},
-    {val:120, label:'2 horas antes'},
-    {val:240, label:'4 horas antes'},
-    {val:480, label:'8 horas antes'},
-    {val:1440,label:'1 día antes'},
+  var REMINDER_OPTS = [];
+
+  /* ── Reemplaza la función _abrirModalEvento completa ── */
+function _abrirModalEvento(e, fechaPresel) {
+  var esEdicion = !!e;
+  var tipos = ['reunion', 'llamada', 'presentacion', 'seguimiento', 'pago'];
+  var fechaDefecto = fechaPresel ? (fechaPresel + 'T08:00') : ahoraLocal();
+  var fechaVal = e ? (e.fecha || fechaDefecto) : fechaDefecto;
+  var reminderVal = e ? (e.reminder_min || 60) : 60;
+ 
+  /* Convertir reminder_min guardado → unidad + cantidad para el picker */
+  var _pu = 'h', _pv = 1;
+  if (reminderVal < 60)        { _pu = 'min'; _pv = reminderVal; }
+  else if (reminderVal < 1440) { _pu = 'h';   _pv = Math.round(reminderVal / 60); }
+  else                         { _pu = 'd';   _pv = Math.round(reminderVal / 1440); }
+ 
+  /* ── Estilos del picker (inline para no tocar el CSS global) ── */
+  var pickerStyle =
+    '<style>' +
+    '.rp-wrap{display:flex;gap:8px;align-items:stretch;margin-bottom:14px}' +
+    '.rp-num{flex:1;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:15px;font-weight:700;color:#1a237e;text-align:center;outline:none;min-width:0;box-sizing:border-box}' +
+    '.rp-num:focus{border-color:#1565C0;box-shadow:0 0 0 3px rgba(21,101,192,.12)}' +
+    '.rp-units{display:flex;gap:4px;flex-shrink:0}' +
+    '.rp-u{padding:8px 13px;border:1.5px solid #ddd;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;background:#fff;color:#666;transition:.15s;white-space:nowrap}' +
+    '.rp-u.on{background:#1565C0;color:#fff;border-color:#1565C0}' +
+    '.rp-preview{font-size:11px;color:#1565c0;font-weight:600;margin-top:-10px;margin-bottom:12px;min-height:16px;padding-left:2px}' +
+    '.rp-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}' +
+    '.rp-chip{padding:5px 11px;border-radius:20px;border:1.5px solid #ddd;font-size:11px;font-weight:700;cursor:pointer;background:#fff;color:#666;transition:.15s}' +
+    '.rp-chip:hover{border-color:#1565C0;color:#1565C0}' +
+    '</style>';
+ 
+  /* ── Accesos rápidos ── */
+  var chips = [
+    { label: '15 min', min: 15 },
+    { label: '30 min', min: 30 },
+    { label: '1 hora', min: 60 },
+    { label: '2 horas', min: 120 },
+    { label: '4 horas', min: 240 },
+    { label: '1 día',  min: 1440 },
+    { label: '2 días', min: 2880 },
   ];
-
-  function _abrirModalEvento(e, fechaPresel) {
-    var esEdicion=!!e;
-    var tipos=['reunion','llamada','presentacion','seguimiento','pago'];
-    var fechaDefecto=fechaPresel?(fechaPresel+'T08:00'):ahoraLocal();
-    var fechaVal=e?(e.fecha||fechaDefecto):fechaDefecto;
-    var reminderVal=e?(e.reminder_min||60):60;
-
-    var body=
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Tipo</label>' +
-      '<select id="segEvTipo" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-      tipos.map(function(t){ return '<option value="'+t+'"'+(e&&e.tipo===t?' selected':'')+'>'+t.charAt(0).toUpperCase()+t.slice(1)+'</option>'; }).join('')+
-      '</select>' +
-      _inp('segEvTitulo','Título *','text',e?e.titulo:'','Ej: Reunión con Juan Pérez') +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha y hora *</label>' +
-      '<input id="segEvFecha" type="datetime-local" value="'+fechaVal+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">⏰ Recordatorio</label>' +
-      '<select id="segEvReminder" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-      REMINDER_OPTS.map(function(o){ return '<option value="'+o.val+'"'+(reminderVal===o.val?' selected':'')+'>'+o.label+'</option>'; }).join('')+
-      '</select>' +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Vendedor responsable</label>' +
-      '<select id="segEvVendedor" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-      '<option value="">— Sin asignar —</option>' +
-      _vendedores.map(function(v){ return '<option value="'+v.id+'"'+(e&&e.vendedor_id===v.id?' selected':'')+'>'+v.nombre+'</option>'; }).join('') +
-      '</select>' +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Descripción</label>' +
-      '<textarea id="segEvDesc" rows="2" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box;resize:vertical">'+(e?(e.descripcion||''):'')+'</textarea>' +
-      _inp('segEvRel','Relacionado (lote ID o nombre)','text',e?(e.relacionado||''):'','Ej: B02 o Juan Pérez');
-
-    _abrirModal((esEdicion?'✏️ Editar evento':'📅 Nuevo evento'), body, function(){
-      var titulo=(document.getElementById('segEvTitulo').value||'').trim();
-      if(!titulo){alert('El título es obligatorio.');return;}
-      var fechaInput=document.getElementById('segEvFecha').value;
-      var reminderMin=parseInt(document.getElementById('segEvReminder').value)||60;
-      var datos={
-        tipo        : document.getElementById('segEvTipo').value,
-        titulo      : titulo,
-        fecha       : fechaInput,
-        reminder_min: reminderMin,
-        vendedor_id : document.getElementById('segEvVendedor').value || null,
-        descripcion : document.getElementById('segEvDesc').value.trim(),
-        relacionado : document.getElementById('segEvRel').value.trim(),
-      };
-      if(!esEdicion){
-        datos.completado=false;
-        datos.notificado=false;
+ 
+  var body =
+    pickerStyle +
+ 
+    /* Tipo */
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Tipo</label>' +
+    '<select id="segEvTipo" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+    tipos.map(function(t) {
+      return '<option value="' + t + '"' + (e && e.tipo === t ? ' selected' : '') + '>' +
+        t.charAt(0).toUpperCase() + t.slice(1) + '</option>';
+    }).join('') +
+    '</select>' +
+ 
+    /* Título */
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Título *</label>' +
+    '<input id="segEvTitulo" type="text" value="' + (e ? (e.titulo || '') : '') + '" placeholder="Ej: Reunión con Juan Pérez"' +
+    ' style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+ 
+    /* Fecha y hora */
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha y hora *</label>' +
+    '<input id="segEvFecha" type="datetime-local" value="' + fechaVal + '"' +
+    ' style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+ 
+    /* ── Picker de recordatorio ── */
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:8px">⏰ Recordatorio — ¿cuánto antes avisar?</label>' +
+ 
+    /* Accesos rápidos */
+    '<div class="rp-chips">' +
+    chips.map(function(c) {
+      return '<button type="button" class="rp-chip" data-min="' + c.min + '">' + c.label + '</button>';
+    }).join('') +
+    '</div>' +
+ 
+    /* Input libre */
+    '<div class="rp-wrap">' +
+    '<input id="rpNum" type="number" min="1" max="999" value="' + _pv + '" class="rp-num">' +
+    '<div class="rp-units">' +
+    '<button type="button" class="rp-u' + (_pu === 'min' ? ' on' : '') + '" data-u="min">min</button>' +
+    '<button type="button" class="rp-u' + (_pu === 'h'   ? ' on' : '') + '" data-u="h">horas</button>' +
+    '<button type="button" class="rp-u' + (_pu === 'd'   ? ' on' : '') + '" data-u="d">días</button>' +
+    '</div></div>' +
+    '<div class="rp-preview" id="rpPreview"></div>' +
+ 
+    /* Vendedor */
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Vendedor responsable</label>' +
+    '<select id="segEvVendedor" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+    '<option value="">— Sin asignar —</option>' +
+    _vendedores.map(function(v) {
+      return '<option value="' + v.id + '"' + (e && e.vendedor_id === v.id ? ' selected' : '') + '>' + v.nombre + '</option>';
+    }).join('') +
+    '</select>' +
+ 
+    /* Descripción */
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Descripción</label>' +
+    '<textarea id="segEvDesc" rows="2" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box;resize:vertical">' +
+    (e ? (e.descripcion || '') : '') + '</textarea>' +
+ 
+    /* Relacionado */
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Relacionado (lote ID o nombre)</label>' +
+    '<input id="segEvRel" type="text" value="' + (e ? (e.relacionado || '') : '') + '" placeholder="Ej: B02 o Juan Pérez"' +
+    ' style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
+ 
+  _abrirModal((esEdicion ? '✏️ Editar evento' : '📅 Nuevo evento'), body, function () {
+ 
+    /* Leer reminder_min del picker */
+    var rpNum = document.getElementById('rpNum');
+    var rpUon = document.querySelector('.rp-u.on');
+    var rpVal = parseInt((rpNum ? rpNum.value : '') || '1') || 1;
+    var rpU   = rpUon ? rpUon.dataset.u : 'h';
+    var reminderMin = rpU === 'min' ? rpVal
+                    : rpU === 'h'   ? rpVal * 60
+                    : rpVal * 1440;
+ 
+    var titulo = (document.getElementById('segEvTitulo').value || '').trim();
+    if (!titulo) { alert('El título es obligatorio.'); return; }
+ 
+    var fechaInput = document.getElementById('segEvFecha').value;
+    var datos = {
+      tipo         : document.getElementById('segEvTipo').value,
+      titulo       : titulo,
+      // Convertir hora local Colombia a UTC explícitamente
+// fechaInput viene como "2026-05-03T20:36" (hora local)
+// Supabase lo guarda como UTC, así que debemos agregar el offset Colombia (-05:00)
+      fecha: fechaInput || null,
+      reminder_min : reminderMin,
+      vendedor_id  : document.getElementById('segEvVendedor').value || null,
+      descripcion  : document.getElementById('segEvDesc').value.trim(),
+      relacionado  : document.getElementById('segEvRel').value.trim(),
+    };
+    if (!esEdicion) {
+      datos.completado = false;
+      datos.notificado = false;
+    } else {
+      datos.notificado = false;
+      var keyAnterior = 'nav-ev-ahora-' + e.id;
+      var keyMinAnt   = 'nav-ev-min-'   + e.id;
+      delete _tgNotificado[keyAnterior];
+      delete _tgNotificado[keyMinAnt];
+    }
+ 
+    var op = esEdicion ? sbUpdate('eventos', e.id, datos) : sbInsert('eventos', datos);
+    op.then(function (res) {
+      if (esEdicion) {
+        var idx = _eventos.findIndex(function(x) { return x.id === e.id; });
+        if (idx >= 0) _eventos[idx] = Object.assign(_eventos[idx], datos);
       } else {
-        // Al editar, resetear notificado para que el cron vuelva a notificar
-        datos.notificado=false;
+        if (Array.isArray(res)) _eventos = _eventos.concat(res);
       }
-
-      var op=esEdicion?sbUpdate('eventos',e.id,datos):sbInsert('eventos',datos);
-      op.then(function(res){
-        if(esEdicion){
-          var idx=_eventos.findIndex(function(x){return x.id===e.id;});
-          if(idx>=0) _eventos[idx]=Object.assign(_eventos[idx],datos);
-          // Telegram: edición
+      _cerrarModal(); _renderVista(); _actualizarCampanita();
+    }).catch(function (err) { alert('Error: ' + err.message); });
+  });
+ 
+  /* ── Lógica del picker (después de insertar en DOM) ── */
+  setTimeout(function () {
+ 
+    var rpNum    = document.getElementById('rpNum');
+    var rpPreview = document.getElementById('rpPreview');
+    var uBtns    = document.querySelectorAll('.rp-u');
+    var chipBtns = document.querySelectorAll('.rp-chip');
+ 
+    function calcMin() {
+      var v  = parseInt(rpNum.value || '1') || 1;
+      var on = document.querySelector('.rp-u.on');
+      var u  = on ? on.dataset.u : 'h';
+      return u === 'min' ? v : u === 'h' ? v * 60 : v * 1440;
+    }
+ 
+    function labelMin(min) {
+      if (min < 60)   return min + ' minuto' + (min === 1 ? '' : 's') + ' antes';
+      if (min < 1440) {
+        var h = Math.round(min / 60);
+        return h + ' hora' + (h === 1 ? '' : 's') + ' antes';
+      }
+      var d = Math.round(min / 1440);
+      return d + ' día' + (d === 1 ? '' : 's') + ' antes';
+    }
+ 
+    function updatePreview() {
+      var min = calcMin();
+      if (rpPreview) rpPreview.textContent = '→ Recordatorio ' + labelMin(min);
+    }
+ 
+    /* Botones de unidad */
+    uBtns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        uBtns.forEach(function(b) { b.classList.remove('on'); });
+        this.classList.add('on');
+        updatePreview();
+      });
+    });
+ 
+    /* Input numérico */
+    if (rpNum) rpNum.addEventListener('input', updatePreview);
+ 
+    /* Chips de acceso rápido */
+    chipBtns.forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        var min = parseInt(this.dataset.min);
+        /* Ajustar unidad automáticamente */
+        uBtns.forEach(function(b) { b.classList.remove('on'); });
+        if (min < 60) {
+          rpNum.value = min;
+          document.querySelector('.rp-u[data-u="min"]').classList.add('on');
+        } else if (min < 1440) {
+          rpNum.value = Math.round(min / 60);
+          document.querySelector('.rp-u[data-u="h"]').classList.add('on');
         } else {
-          if(Array.isArray(res)) _eventos=_eventos.concat(res);
-          // Telegram: nuevo evento
+          rpNum.value = Math.round(min / 1440);
+          document.querySelector('.rp-u[data-u="d"]').classList.add('on');
         }
-        _cerrarModal(); _renderVista(); _actualizarCampanita();
-      }).catch(function(err){alert('Error: '+err.message);});
+        updatePreview();
+      });
     });
-  }
-
-  /* Completar evento */
-  window._segCompletarEvento=function(id){
-    sbUpdate('eventos',id,{completado:true}).then(function(){
-      var idx=_eventos.findIndex(function(e){return e.id===id;});
-      var titulo=idx>=0?_eventos[idx].titulo:'';
-      if(idx>=0) _eventos[idx].completado=true;
-      _renderVista(); _actualizarCampanita();
-    });
-  };
-
-  /* NUEVO: Revertir completado → pendiente */
-  window._segRevertirEvento=function(id){
-    sbUpdate('eventos',id,{completado:false}).then(function(){
-      var idx=_eventos.findIndex(function(e){return e.id===id;});
-      var titulo=idx>=0?_eventos[idx].titulo:'';
-      if(idx>=0) _eventos[idx].completado=false;
-      _renderVista(); _actualizarCampanita();
-    });
-  };
-
-  /* NUEVO: Eliminar evento */
-  window._segEliminarEvento=function(id){
-    var ev=_eventos.find(function(e){return e.id===id;});
-    if(!confirm('¿Eliminar el evento "'+( ev?ev.titulo:'')+ '"? Esta acción no se puede deshacer.')) return;
-    sbDelete('eventos',id).then(function(){
-      _eventos=_eventos.filter(function(e){return e.id!==id;});
-      _renderVista(); _actualizarCampanita();
-    }).catch(function(e){alert('Error al eliminar: '+e.message);});
-  };
+ 
+    updatePreview();
+  }, 80);
+} // fin _abrirModalEvento
 
   /* ══════════════════════════════════════════════════════════
      ACCIONES — PAGOS
   ══════════════════════════════════════════════════════════ */
-  window._segEditarCuota=function(pagoId){
-    var pago=_pagos.find(function(p){return p.id===pagoId;}); if(!pago) return;
-    var body=
-      _inp('segCuotaFecha','Fecha de vencimiento','date',pago.fecha_vence||'','') +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto (en MILLONES COP — ej: 1.5 = $1.500.000)</label>' +
-      '<input id="segCuotaMonto" type="number" step="0.0001" value="'+(pago.monto||'')+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
-      '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCuotaMontoPreview"></div>';
-    _abrirModal('✏️ Editar cuota #'+pago.num_cuota+' — Lote '+pago.lot_id, body, function(){
-      var nuevaFecha=document.getElementById('segCuotaFecha').value;
-      var nuevoMonto=parseFloat(document.getElementById('segCuotaMonto').value);
-      if(!nuevaFecha){alert('La fecha es obligatoria.');return;}
-      if(isNaN(nuevoMonto)||nuevoMonto<=0){alert('Ingresa un monto válido.');return;}
-      sbUpdate('pagos',pagoId,{fecha_vence:nuevaFecha,monto:nuevoMonto}).then(function(){
-        var idx=_pagos.findIndex(function(p){return p.id===pagoId;});
-        if(idx>=0){_pagos[idx].fecha_vence=nuevaFecha;_pagos[idx].monto=nuevoMonto;}
-        _cerrarModal(); _renderVista();
-      }).catch(function(e){alert('Error: '+e.message);});
-    });
-    setTimeout(function(){
-      var inp=document.getElementById('segCuotaMonto');
-      var prev=document.getElementById('segCuotaMontoPreview');
-      if(!inp||!prev) return;
-      function act(){var v=parseFloat(inp.value);prev.textContent=isNaN(v)?'':'→ '+fmtMonto(v);}
-      inp.addEventListener('input',act); act();
-    },100);
-  };
-
-  window._segRegistrarPago=function(pagoId){
-    var pago=_pagos.find(function(p){return p.id===pagoId;}); if(!pago) return;
-    var body=
-      _inp('segPagoFecha','Fecha de pago','date',hoy(),'') +
+  window._segRegistrarPago = function(pagoId) {
+    var pago = _pagos.find(function(p){ return p.id === pagoId; });
+    if (!pago) return;
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de pago</label>' +
+      '<input id="segPagoFecha" type="date" value="' + hoy() + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto (en millones COP)</label>' +
-      '<input id="segPagoMonto" type="number" step="0.0001" value="'+(pago.monto||'')+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+      '<input id="segPagoMonto" type="number" step="0.0001" value="' + (pago.monto || '') + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
       '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segPagoMontoPreview"></div>' +
-      _inp('segPagoNota','Nota / Comprobante','text','','Ej: Transferencia #12345');
-    _abrirModal('✓ Registrar pago — Cuota #'+pago.num_cuota, body, function(){
-      var fechaPago=document.getElementById('segPagoFecha').value;
-      var montoVal=parseFloat(document.getElementById('segPagoMonto').value)||pago.monto;
-      var nota=document.getElementById('segPagoNota').value.trim();
-      sbUpdate('pagos',pagoId,{pagado:true,fecha_pago:fechaPago||hoy(),monto:montoVal,nota:nota}).then(function(){
-        var idx=_pagos.findIndex(function(p){return p.id===pagoId;});
-        if(idx>=0){_pagos[idx].pagado=true;_pagos[idx].fecha_pago=fechaPago||hoy();_pagos[idx].monto=montoVal;_pagos[idx].nota=nota;}
-        // Telegram: pago registrado
-        var lote=window.S&&window.S.lots?window.S.lots.find(function(l){return l.id===pago.lot_id;}):null;
-        _cerrarModal(); _renderVista(); _actualizarCampanita();
-      }).catch(function(e){alert('Error: '+e.message);});
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nota / Comprobante</label>' +
+      '<input id="segPagoNota" type="text" value="" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
+    _abrirModal('✓ Registrar pago — Cuota #' + pago.num_cuota, body, function() {
+      var fechaPago = document.getElementById('segPagoFecha').value;
+      var montoVal  = parseFloat(document.getElementById('segPagoMonto').value) || pago.monto;
+      var nota      = document.getElementById('segPagoNota').value.trim();
+      sbUpdate('pagos', pagoId, { pagado: true, fecha_pago: fechaPago || hoy(), monto: montoVal, nota: nota })
+        .then(function() {
+          var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
+          if (idx >= 0) { _pagos[idx].pagado = true; _pagos[idx].fecha_pago = fechaPago || hoy(); _pagos[idx].monto = montoVal; _pagos[idx].nota = nota; }
+          _cerrarModal(); _renderVista(); _actualizarCampanita();
+        }).catch(function(e){ alert('Error: ' + e.message); });
     });
-    setTimeout(function(){
-      var inp=document.getElementById('segPagoMonto');
-      var prev=document.getElementById('segPagoMontoPreview');
-      if(!inp||!prev) return;
-      function act(){var v=parseFloat(inp.value);prev.textContent=isNaN(v)?'':'→ '+fmtMonto(v);}
-      inp.addEventListener('input',act); act();
-    },100);
+    setTimeout(function() {
+      var inp  = document.getElementById('segPagoMonto');
+      var prev = document.getElementById('segPagoMontoPreview');
+      if (!inp || !prev) return;
+      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
+      inp.addEventListener('input', act); act();
+    }, 100);
   };
 
-  window._segDesmarcarPago=function(pagoId){
-    if(!confirm('¿Desmarcar este pago como no realizado?')) return;
-    sbUpdate('pagos',pagoId,{pagado:false,fecha_pago:null,nota:''}).then(function(){
-      var idx=_pagos.findIndex(function(p){return p.id===pagoId;});
-      if(idx>=0){_pagos[idx].pagado=false;_pagos[idx].fecha_pago=null;}
+  window._segDesmarcarPago = function(pagoId) {
+    if (!confirm('¿Desmarcar este pago como no realizado?')) return;
+    sbUpdate('pagos', pagoId, { pagado: false, fecha_pago: null, nota: '' }).then(function() {
+      var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
+      if (idx >= 0) { _pagos[idx].pagado = false; _pagos[idx].fecha_pago = null; }
       _renderVista(); _actualizarCampanita();
     });
+  };
+
+  window._segEditarCuota = function(pagoId) {
+    var pago = _pagos.find(function(p){ return p.id === pagoId; });
+    if (!pago) return;
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de vencimiento</label>' +
+      '<input id="segCuotaFecha" type="date" value="' + (pago.fecha_vence || '') + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto (en millones COP)</label>' +
+      '<input id="segCuotaMonto" type="number" step="0.0001" value="' + (pago.monto || '') + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+      '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCuotaMontoPreview"></div>';
+    _abrirModal('✏️ Editar cuota #' + pago.num_cuota + ' — Lote ' + pago.lot_id, body, function() {
+      var nuevaFecha  = document.getElementById('segCuotaFecha').value;
+      var nuevoMonto  = parseFloat(document.getElementById('segCuotaMonto').value);
+      if (!nuevaFecha) { alert('La fecha es obligatoria.'); return; }
+      if (isNaN(nuevoMonto) || nuevoMonto <= 0) { alert('Ingresa un monto válido.'); return; }
+      sbUpdate('pagos', pagoId, { fecha_vence: nuevaFecha, monto: nuevoMonto }).then(function() {
+        var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
+        if (idx >= 0) { _pagos[idx].fecha_vence = nuevaFecha; _pagos[idx].monto = nuevoMonto; }
+        _cerrarModal(); _renderVista();
+      }).catch(function(e){ alert('Error: ' + e.message); });
+    });
+    setTimeout(function() {
+      var inp  = document.getElementById('segCuotaMonto');
+      var prev = document.getElementById('segCuotaMontoPreview');
+      if (!inp || !prev) return;
+      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
+      inp.addEventListener('input', act); act();
+    }, 100);
   };
 
   /* ══════════════════════════════════════════════════════════
      ACCIONES — PROSPECTOS
   ══════════════════════════════════════════════════════════ */
-  window._segCambiarVendedor=function(id){_vendedorActivo=id||null;_renderVista();};
 
-  window._segGestionarVendedores=function(){
-    var lista=_vendedores.map(function(v){
-      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:#f5f5f5;margin-bottom:6px">' +
-        '<span style="font-size:13px;font-weight:600">👤 '+v.nombre+'</span>' +
-        '<button onclick="window._segEliminarVendedor(\''+v.id+'\')" style="background:none;border:none;cursor:pointer;color:#c62828;font-size:13px">🗑</button>' +
-        '</div>';
-    }).join('')||'<div style="font-size:12px;color:#999;text-align:center;padding:10px">Sin vendedores registrados</div>';
-    var body='<div style="margin-bottom:14px">'+lista+'</div>' +
-      '<div style="border-top:1px solid #eee;padding-top:12px">' +
-      '<div style="font-size:12px;font-weight:700;color:#444;margin-bottom:8px">Registrar nuevo vendedor</div>' +
-      _inp('segVendNombre','Nombre completo','text','','Ej: Carlos Ramírez') +
-      _inp('segVendTel','Teléfono (opcional)','tel','','Ej: 3001234567') +
-      '<button id="segBtnAddVend" class="btn bg bsm" style="width:100%">+ Agregar vendedor</button>' +
-      '</div>';
-    _abrirModal('⚙️ Gestión de vendedores', body, function(){_cerrarModal();});
-    setTimeout(function(){
-      var btn=document.getElementById('segBtnAddVend'); if(!btn) return;
-      btn.onclick=function(){
-        var nombre=(document.getElementById('segVendNombre').value||'').trim();
-        var tel=(document.getElementById('segVendTel').value||'').trim();
-        if(!nombre){alert('El nombre es obligatorio.');return;}
-        sbInsert('vendedores',{nombre:nombre,telefono:tel}).then(function(res){
-          if(Array.isArray(res)) _vendedores=_vendedores.concat(res);
-          window._segGestionarVendedores(); _renderVista();
-        }).catch(function(e){alert('Error: '+e.message);});
-      };
-    },100);
+  /* ── Cuota Inicial: editar, pagar, desmarcar ──────────────── */
+  window._segEditarCuotaInicial = function(loteId) {
+    var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
+    if (!lote) return;
+    var dnAmt = Number(lote.dnAmt) || 0;
+
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de pago / ingreso</label>' +
+      '<input id="segCIFecha" type="date" value="'+(lote.dnFecha||lote.saleDate||'')+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto cuota inicial (en millones COP)</label>' +
+      '<input id="segCIMonto" type="number" step="0.0001" value="'+dnAmt+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+      '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCIMontoPreview"></div>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nota / Comprobante</label>' +
+      '<input id="segCINota" type="text" value="'+(lote.dnNota||'')+'" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
+
+    _abrirModal('✏️ Editar cuota inicial — Lote '+loteId, body, function() {
+      var nuevoMonto = parseFloat(document.getElementById('segCIMonto').value);
+      var nuevaFecha = document.getElementById('segCIFecha').value;
+      var nuevaNota  = document.getElementById('segCINota').value.trim();
+      if (isNaN(nuevoMonto) || nuevoMonto < 0) { alert('Ingresa un monto válido.'); return; }
+      lote.dnAmt  = nuevoMonto;
+      lote.dnFecha = nuevaFecha;
+      lote.dnNota  = nuevaNota;
+      if (typeof saveS === 'function') saveS();
+      if (typeof syncLot === 'function') syncLot(lote);
+      _cerrarModal();
+      _renderVista();
+    });
+
+    setTimeout(function() {
+      var inp = document.getElementById('segCIMonto');
+      var prev = document.getElementById('segCIMontoPreview');
+      if (!inp || !prev) return;
+      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
+      inp.addEventListener('input', act); act();
+    }, 100);
   };
 
-  window._segEliminarVendedor=function(id){
-    var v=_vendedores.find(function(x){return x.id===id;});
-    if(!confirm('¿Eliminar al vendedor "'+(v?v.nombre:'')+'"?')) return;
-    sbDelete('vendedores',id).then(function(){
-      _vendedores=_vendedores.filter(function(x){return x.id!==id;});
-      if(_vendedorActivo===id) _vendedorActivo=null;
+  window._segPagarCuotaInicial = function(loteId) {
+    var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
+    if (!lote) return;
+    var dnAmt = Number(lote.dnAmt) || 0;
+
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de pago</label>' +
+      '<input id="segCIPFecha" type="date" value="'+hoy()+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto recibido (en millones COP)</label>' +
+      '<input id="segCIPMonto" type="number" step="0.0001" value="'+dnAmt+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+      '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCIPMontoPreview"></div>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nota / Comprobante</label>' +
+      '<input id="segCIPNota" type="text" value="" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
+
+    _abrirModal('✓ Registrar pago — Cuota Inicial Lote '+loteId, body, function() {
+      var monto = parseFloat(document.getElementById('segCIPMonto').value) || dnAmt;
+      var fecha = document.getElementById('segCIPFecha').value || hoy();
+      var nota  = document.getElementById('segCIPNota').value.trim();
+      lote.dnPagado = true;
+      lote.dnAmt    = monto;
+      lote.dnFecha  = fecha;
+      lote.dnNota   = nota;
+      if (typeof saveS === 'function') saveS();
+      if (typeof syncLot === 'function') syncLot(lote);
+      _cerrarModal();
+      _renderVista();
+    });
+
+    setTimeout(function() {
+      var inp = document.getElementById('segCIPMonto');
+      var prev = document.getElementById('segCIPMontoPreview');
+      if (!inp || !prev) return;
+      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
+      inp.addEventListener('input', act); act();
+    }, 100);
+  };
+
+  window._segDesmarcarCI = function(loteId) {
+    if (!confirm('¿Desmarcar la cuota inicial como no pagada?')) return;
+    var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
+    if (!lote) return;
+    lote.dnPagado = false;
+    if (typeof saveS === 'function') saveS();
+    if (typeof syncLot === 'function') syncLot(lote);
+    _renderVista();
+  };
+
+  window._segNuevoProspecto = function(datos) {
+    var d = datos || {};
+    var optsVend = '<option value="">— Sin vendedor asignado —</option>' +
+      _vendedores.map(function(v){ return '<option value="' + v.id + '"' + (d.vendedor_id === v.id ? ' selected' : '') + '>' + v.nombre + '</option>'; }).join('');
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nombre completo *</label>' +
+      '<input id="segPrNombre" type="text" value="' + (d.nombre || '') + '" placeholder="Ej: Carlos Ramírez" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Teléfono</label>' +
+      '<input id="segPrTel" type="tel" value="' + (d.telefono || '') + '" placeholder="Ej: 3001234567" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Estado</label>' +
+      '<select id="segPrEstado" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      ESTADOS.map(function(e){ return '<option value="' + e.id + '"' + (d.estado === e.id ? ' selected' : '') + '>' + e.label + '</option>'; }).join('') + '</select>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Vendedor asignado</label>' +
+      '<select id="segPrVendedor" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' + optsVend + '</select>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Próximo seguimiento</label>' +
+      '<input id="segPrFollow" type="date" value="' + (d.next_follow || '') + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Notas</label>' +
+      '<textarea id="segPrNotas" rows="3" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box;resize:vertical">' + (d.notas || '') + '</textarea>';
+
+    _abrirModal((d.id ? '✏️ Editar prospecto' : '👥 Nuevo prospecto'), body, function() {
+      var nombre = (document.getElementById('segPrNombre').value || '').trim();
+      if (!nombre) { alert('El nombre es obligatorio.'); return; }
+      var payload = {
+        nombre      : nombre,
+        telefono    : document.getElementById('segPrTel').value.trim(),
+        estado      : document.getElementById('segPrEstado').value,
+        vendedor_id : document.getElementById('segPrVendedor').value || null,
+        next_follow : document.getElementById('segPrFollow').value || null,
+        notas       : document.getElementById('segPrNotas').value.trim(),
+        updated_at  : new Date().toISOString()
+      };
+      var op = d.id ? sbUpdate('prospectos', d.id, payload) : sbInsert('prospectos', payload);
+      op.then(function(res) {
+        if (d.id) {
+          var idx = _prospectos.findIndex(function(p){ return p.id === d.id; });
+          if (idx >= 0) _prospectos[idx] = Object.assign(_prospectos[idx], payload);
+        } else {
+          if (Array.isArray(res)) _prospectos = res.concat(_prospectos);
+        }
+        _cerrarModal(); _renderVista(); _actualizarCampanita();
+      }).catch(function(e){ alert('Error: ' + e.message); });
+    });
+  };
+
+  window._segEditarProspecto = function(id) {
+    var p = _prospectos.find(function(x){ return x.id === id; });
+    if (p) window._segNuevoProspecto(p);
+  };
+
+  window._segEliminarProspecto = function(id) {
+    var p = _prospectos.find(function(x){ return x.id === id; });
+    if (!confirm('¿Eliminar el prospecto "' + (p ? p.nombre : '') + '"? Esta acción no se puede deshacer.')) return;
+    sbDelete('prospectos', id).then(function() {
+      _prospectos = _prospectos.filter(function(x){ return x.id !== id; });
+      _renderVista(); _actualizarCampanita();
+    }).catch(function(e){ alert('Error al eliminar: ' + e.message); });
+  };
+
+  window._segMoverProspecto = function(id) {
+    var p = _prospectos.find(function(x){ return x.id === id; });
+    if (!p) return;
+    var body = '<div style="font-size:13px;margin-bottom:14px;color:#555">Mover <b>' + p.nombre + '</b> a:</div>' +
+      '<div style="display:flex;flex-direction:column;gap:8px">' +
+      ESTADOS.map(function(est) {
+        var esActual = est.id === p.estado;
+        return '<button onclick="window._segCambiarEstado(\'' + id + '\',\'' + est.id + '\')" ' +
+          'style="padding:10px 14px;border-radius:8px;border:2px solid ' + (esActual ? est.color : '#ddd') + ';' +
+          'background:' + (esActual ? est.bg : '#fff') + ';color:' + (esActual ? est.color : '#555') + ';' +
+          'font-weight:' + (esActual ? '800' : '500') + ';font-size:13px;cursor:pointer;text-align:left">' +
+          est.label + (esActual ? ' ← actual' : '') + '</button>';
+      }).join('') + '</div>';
+    var overlay = document.getElementById('segModal');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'segModal';
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9500;display:flex;align-items:center;justify-content:center';
+      overlay.addEventListener('click', function(e){ if (e.target === overlay) _cerrarModal(); });
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = '<div style="background:#fff;border-radius:14px;padding:24px;width:380px;max-width:94vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
+      '<div style="font-size:15px;font-weight:800;color:#1a237e">Cambiar estado</div>' +
+      '<button onclick="window._segCerrarModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888">✕</button>' +
+      '</div>' + body + '</div>';
+    overlay.style.display = 'flex';
+  };
+
+  window._segCambiarEstado = function(id, nuevoEstado) {
+    sbUpdate('prospectos', id, { estado: nuevoEstado, updated_at: new Date().toISOString() }).then(function() {
+      var idx = _prospectos.findIndex(function(p){ return p.id === id; });
+      if (idx >= 0) _prospectos[idx].estado = nuevoEstado;
+      _cerrarModal(); _renderVista(); _actualizarCampanita();
+    });
+  };
+
+  window._segCambiarVendedorAgenda = function(id) {
+    _vendedorAgenda = id || null;
+    _diaSeleccionado = null;
+    _renderVista();
+  };
+
+  window._segCambiarVendedor = function(id) { _vendedorActivo = id || null; _renderVista(); };
+
+  window._segGestionarVendedores = function() {
+    var lista = _vendedores.map(function(v) {
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:#f5f5f5;margin-bottom:6px">' +
+        '<span style="font-size:13px;font-weight:600">👤 ' + v.nombre + '</span>' +
+        '<button onclick="window._segEliminarVendedor(\'' + v.id + '\')" style="background:none;border:none;cursor:pointer;color:#c62828;font-size:13px">🗑</button>' +
+        '</div>';
+    }).join('') || '<div style="font-size:12px;color:#999;text-align:center;padding:10px">Sin vendedores registrados</div>';
+    var body = '<div style="margin-bottom:14px">' + lista + '</div>' +
+      '<div style="border-top:1px solid #eee;padding-top:12px">' +
+      '<div style="font-size:12px;font-weight:700;color:#444;margin-bottom:8px">Registrar nuevo vendedor</div>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nombre completo</label>' +
+      '<input id="segVendNombre" type="text" placeholder="Ej: Carlos Ramírez" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Teléfono (opcional)</label>' +
+      '<input id="segVendTel" type="tel" placeholder="Ej: 3001234567" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<button id="segBtnAddVend" class="btn bg bsm" style="width:100%">+ Agregar vendedor</button>' +
+      '</div>';
+    _abrirModal('⚙️ Gestión de vendedores', body, function(){ _cerrarModal(); });
+    setTimeout(function() {
+      var btn = document.getElementById('segBtnAddVend');
+      if (!btn) return;
+      btn.onclick = function() {
+        var nombre = (document.getElementById('segVendNombre').value || '').trim();
+        var tel    = (document.getElementById('segVendTel').value || '').trim();
+        if (!nombre) { alert('El nombre es obligatorio.'); return; }
+        sbInsert('vendedores', { nombre: nombre, telefono: tel }).then(function(res) {
+          if (Array.isArray(res)) _vendedores = _vendedores.concat(res);
+          window._segGestionarVendedores(); _renderVista();
+        }).catch(function(e){ alert('Error: ' + e.message); });
+      };
+    }, 100);
+  };
+
+  window._segEliminarVendedor = function(id) {
+    var v = _vendedores.find(function(x){ return x.id === id; });
+    if (!confirm('¿Eliminar al vendedor "' + (v ? v.nombre : '') + '"?')) return;
+    sbDelete('vendedores', id).then(function() {
+      _vendedores = _vendedores.filter(function(x){ return x.id !== id; });
+      if (_vendedorActivo === id) _vendedorActivo = null;
       window._segGestionarVendedores(); _renderVista();
     });
   };
 
-  /* NUEVO: Eliminar prospecto */
-  window._segEliminarProspecto=function(id){
-    var p=_prospectos.find(function(x){return x.id===id;});
-    if(!confirm('¿Eliminar el prospecto "'+(p?p.nombre:'')+'"? Esta acción no se puede deshacer.')) return;
-    sbDelete('prospectos',id).then(function(){
-      _prospectos=_prospectos.filter(function(x){return x.id!==id;});
+  /* Completar / Revertir / Eliminar eventos */
+  window._segCompletarEvento = function(id) {
+    sbUpdate('eventos', id, { completado: true }).then(function() {
+      var idx = _eventos.findIndex(function(e) { return e.id === id; });
+      if (idx >= 0) _eventos[idx].completado = true;
       _renderVista(); _actualizarCampanita();
-    }).catch(function(e){alert('Error al eliminar: '+e.message);});
+    }).catch(function(e) { alert('Error: ' + e.message); });
   };
 
-  window._segNuevoProspecto=function(datos){
-    var d=datos||{};
-    var optsVend='<option value="">— Sin vendedor asignado —</option>'+
-      _vendedores.map(function(v){return '<option value="'+v.id+'"'+(d.vendedor_id===v.id?' selected':'')+'>'+v.nombre+'</option>';}).join('');
-    var body=
-      _inp('segPrNombre','Nombre completo *','text',d.nombre||'','Ej: Carlos Ramírez') +
-      _inp('segPrTel','Teléfono','tel',d.telefono||'','Ej: 3001234567') +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Estado</label>' +
-      '<select id="segPrEstado" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-      ESTADOS.map(function(e){return '<option value="'+e.id+'"'+(d.estado===e.id?' selected':'')+'>'+e.label+'</option>';}).join('')+'</select>' +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Vendedor asignado</label>' +
-      '<select id="segPrVendedor" style="width:100%;padding:9px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">'+optsVend+'</select>' +
-      _inp('segPrFollow','Próximo seguimiento','date',d.next_follow||'','') +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Notas</label>' +
-      '<textarea id="segPrNotas" rows="3" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box;resize:vertical">'+(d.notas||'')+'</textarea>';
-
-    _abrirModal((d.id?'✏️ Editar prospecto':'👥 Nuevo prospecto'), body, function(){
-      var nombre=(document.getElementById('segPrNombre').value||'').trim();
-      if(!nombre){alert('El nombre es obligatorio.');return;}
-      var payload={
-        nombre      : nombre,
-        telefono    : document.getElementById('segPrTel').value.trim(),
-        estado      : document.getElementById('segPrEstado').value,
-        vendedor_id : document.getElementById('segPrVendedor').value||null,
-        next_follow : document.getElementById('segPrFollow').value||null,
-        notas       : document.getElementById('segPrNotas').value.trim(),
-        updated_at  : new Date().toISOString()
-      };
-      var op=d.id?sbUpdate('prospectos',d.id,payload):sbInsert('prospectos',payload);
-      op.then(function(res){
-        if(d.id){
-          var idx=_prospectos.findIndex(function(p){return p.id===d.id;});
-          if(idx>=0) _prospectos[idx]=Object.assign(_prospectos[idx],payload);
-        } else {
-          if(Array.isArray(res)) _prospectos=res.concat(_prospectos);
-        }
-        _cerrarModal(); _renderVista(); _actualizarCampanita();
-      }).catch(function(e){alert('Error: '+e.message);});
-    });
+  window._segRevertirEvento = function(id) {
+    sbUpdate('eventos', id, { completado: false }).then(function() {
+      var idx = _eventos.findIndex(function(e) { return e.id === id; });
+      if (idx >= 0) _eventos[idx].completado = false;
+      _renderVista(); _actualizarCampanita();
+    }).catch(function(e) { alert('Error: ' + e.message); });
   };
 
-  window._segEditarProspecto=function(id){
-    var p=_prospectos.find(function(x){return x.id===id;}); if(p) window._segNuevoProspecto(p);
+  window._segEliminarEvento = function(id) {
+    var ev = _eventos.find(function(e) { return e.id === id; });
+    if (!confirm('\u00BFEliminar el evento "' + (ev ? ev.titulo : '') + '"? Esta acci\u00F3n no se puede deshacer.')) return;
+    sbDelete('eventos', id).then(function() {
+      _eventos = _eventos.filter(function(e) { return e.id !== id; });
+      _renderVista(); _actualizarCampanita();
+    }).catch(function(e) { alert('Error al eliminar: ' + e.message); });
   };
 
-  window._segMoverProspecto=function(id){
-    var p=_prospectos.find(function(x){return x.id===id;}); if(!p) return;
-    var body='<div style="font-size:13px;margin-bottom:14px;color:#555">Mover <b>'+p.nombre+'</b> a:</div>' +
-      '<div style="display:flex;flex-direction:column;gap:8px">' +
-      ESTADOS.map(function(est){
-        var esActual=est.id===p.estado;
-        return '<button onclick="window._segCambiarEstado(\''+id+'\',\''+est.id+'\')" ' +
-          'style="padding:10px 14px;border-radius:8px;border:2px solid '+(esActual?est.color:'#ddd')+';background:'+(esActual?est.bg:'#fff')+';color:'+(esActual?est.color:'#555')+';font-weight:'+(esActual?'800':'500')+';font-size:13px;cursor:pointer;text-align:left">'+est.label+(esActual?' ← actual':'')+'</button>';
-      }).join('')+'</div>';
-    var overlay=document.getElementById('segModal');
-    if(!overlay){
-      overlay=document.createElement('div');
-      overlay.id='segModal';
-      overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9500;display:flex;align-items:center;justify-content:center';
-      overlay.addEventListener('click',function(e){if(e.target===overlay)_cerrarModal();});
-      document.body.appendChild(overlay);
-    }
-    overlay.innerHTML='<div style="background:#fff;border-radius:14px;padding:24px;width:380px;max-width:94vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
-      '<div style="font-size:15px;font-weight:800;color:#1a237e">Cambiar estado</div>' +
-      '<button onclick="window._segCerrarModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888">✕</button>' +
-      '</div>'+body+'</div>';
-    overlay.style.display='flex';
-  };
-
-  window._segCambiarEstado=function(id,nuevoEstado){
-    sbUpdate('prospectos',id,{estado:nuevoEstado,updated_at:new Date().toISOString()}).then(function(){
-      var idx=_prospectos.findIndex(function(p){return p.id===id;});
-      var nombre=idx>=0?_prospectos[idx].nombre:'';
-      if(idx>=0) _prospectos[idx].estado=nuevoEstado;
-      var estLabel=(ESTADOS.find(function(e){return e.id===nuevoEstado;})||{label:nuevoEstado}).label;
-      _cerrarModal(); _renderVista(); _actualizarCampanita();
-    });
-  };
 
   /* ══════════════════════════════════════════════════════════
      NOTIFICACIONES DEL NAVEGADOR + RECORDATORIOS DE EVENTOS
@@ -1019,91 +1331,73 @@ function tgEnviar(mensaje) { if (!TG_TOKEN || TG_TOKEN === 'REEMPLAZA_CON_TU_TOK
     return v ? v.nombre.toUpperCase() : '';
   }
 
-  function _chequearNotificaciones(){
-    if(!('Notification' in window)||Notification.permission!=='granted') return;
-    var ahora  = new Date();
-    var hoyIso = hoy();
-    var ayerIso = (function(){ var d=new Date(); d.setDate(d.getDate()-1); return isoFecha(d); })();
-
-    // ── EVENTOS ──────────────────────────────────────────────
-    _eventos.forEach(function(e){
-      if(e.completado || !e.fecha || !e.fecha.includes('T')) return;
-      var fechaEv  = new Date(e.fecha);
-      var diffMin  = Math.round((fechaEv - ahora) / 60000);
-      var reminder = e.reminder_min || 60;
-      var vend     = _nombreVendedorEvento(e);
-      var vendPre  = vend ? vend + ': ' : '';
-      var tipoLabel= e.tipo ? e.tipo.charAt(0).toUpperCase() + e.tipo.slice(1) : 'Evento';
-      var horaStr  = fmtHora(e.fecha);
-
-      // Recordatorio del navegador: cuando llega el tiempo configurado
-      if(diffMin >= reminder-2 && diffMin <= reminder+2){
-        new Notification('⏰ Araguatos — ' + e.titulo, {
-          body: (vend ? vend + ' · ' : '') + tipoLabel + (horaStr ? ' a las ' + horaStr : ''),
-          icon: 'logo.png'
-        });
-      }
-
-      // Telegram: aviso el día anterior (entre 8:00 y 8:02 AM)
-      var keyDia = 'ev-dia-' + e.id;
-      var esFechaMañana = (function(){
-        var d = new Date(fechaEv); d.setDate(d.getDate()-1); return isoFecha(d) === hoyIso;
-      })();
-      var ahoraH = ahora.getHours(), ahoraM = ahora.getMinutes();
-      if(esFechaMañana && ahoraH===8 && ahoraM<=2 && !_tgNotificado[keyDia]){
-        _tgNotificado[keyDia] = true;
-        tgEnviar('📅 <b>Recordatorio — mañana</b> 👤 ' + vendPre + tipoLabel + ': <b>' + e.titulo + '</b> 🕐 ' + (horaStr || 'Hora no definida'));
-      }
-
-      // Telegram: recordatorio en el tiempo configurado (±2 min)
-      var keyMin = 'ev-min-' + e.id;
-      if(diffMin >= reminder-2 && diffMin <= reminder+2 && !_tgNotificado[keyMin]){
-        _tgNotificado[keyMin] = true;
-        var cuandoStr = reminder >= 1440 ? '1 día antes'
-          : reminder >= 60 ? 'en ' + Math.round(reminder/60) + 'h'
-          : 'en ' + reminder + ' min';
-        tgEnviar('⏰ <b>Recordatorio — ' + cuandoStr + '</b> 👤 ' + vendPre + tipoLabel + ': <b>' + e.titulo + '</b> 🕐 ' + (horaStr || '') + (e.descripcion ? ' 📝 ' + e.descripcion : ''));
-      }
-
-      // Notif navegador: evento que empieza ahora (±2 min)
-      if(diffMin >= -2 && diffMin <= 2 && !e.notificado){
-        new Notification('🔔 Araguatos — ¡Ahora! ' + e.titulo, {
-          body: (vend ? vend + ' · ' : '') + (e.descripcion || tipoLabel),
-          icon: 'logo.png'
-        });
-        sbUpdate('eventos', e.id, { notificado: true });
-        e.notificado = true;
-      }
-    });
-
-    // ── PAGOS ─────────────────────────────────────────────────
-    _pagos.forEach(function(p){
-      if(p.pagado) return;
-      var dVence = diffDias(p.fecha_vence);
-      var lote   = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id === p.lot_id; }) : null;
-      var comprador = lote && lote.buyer ? lote.buyer.toUpperCase() : ('LOTE ' + p.lot_id);
-      var montoStr  = fmtMonto(p.monto);
-
-      // Telegram: aviso día anterior
-      var keyDia = 'pago-dia-' + p.id;
-      var ahoraH = ahora.getHours(), ahoraM = ahora.getMinutes();
-      if(dVence === 1 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyDia]){
-        _tgNotificado[keyDia] = true;
-        tgEnviar('💳 <b>Mañana vence una cuota</b> 👤 ' + comprador + ' — Lote ' + p.lot_id + ' Cuota #' + p.num_cuota + ' · ' + montoStr);
-      }
-
-      // Telegram + navegador: día del vencimiento
-      var keyHoy = 'pago-hoy-' + p.id;
-      if(dVence === 0 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyHoy]){
-        _tgNotificado[keyHoy] = true;
-        tgEnviar('🔴 <b>HOY vence una cuota</b> 👤 ' + comprador + ' — Lote ' + p.lot_id + ' Cuota #' + p.num_cuota + ' · ' + montoStr);
-        new Notification('💳 Araguatos — Cuota vence HOY', {
-          body: comprador + ' · Lote ' + p.lot_id + ' · Cuota #' + p.num_cuota + ' · ' + montoStr,
-          icon: 'logo.png'
-        });
-      }
-    });
-  }
+ function _chequearNotificaciones() {
+  // Solo notificaciones del navegador — Telegram va por el cron
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+ 
+  var ahora   = new Date();
+  var hoyIso  = hoy();
+ 
+  // ── EVENTOS: notificación del navegador cuando empieza ────
+  _eventos.forEach(function(e) {
+    if (e.completado || !e.fecha || !e.fecha.includes('T')) return;
+ 
+    var fechaEv = new Date(e.fecha);
+    var diffMin = Math.round((fechaEv - ahora) / 60000);
+    var tipoLabel = e.tipo
+      ? e.tipo.charAt(0).toUpperCase() + e.tipo.slice(1)
+      : 'Evento';
+ 
+    // Notificación del navegador según el recordatorio configurado
+    var reminder = e.reminder_min || 60;
+    var keyMin   = 'nav-ev-min-' + e.id;
+    if (Math.abs(diffMin - reminder) <= 2 && !_tgNotificado[keyMin]) {
+      _tgNotificado[keyMin] = true;
+      var cuandoStr = reminder >= 1440 ? 'en 1 día'
+        : reminder >= 60 ? 'en ' + Math.round(reminder / 60) + 'h'
+        : 'en ' + reminder + 'min';
+      new Notification('⏰ Araguatos — ' + cuandoStr + ': ' + e.titulo, {
+        body: tipoLabel + (fmtHora(e.fecha) ? ' a las ' + fmtHora(e.fecha) : ''),
+        icon: 'logo.png'
+      });
+    }
+ 
+    // Notificación cuando el evento empieza (±2 min)
+    var keyAhora = 'nav-ev-ahora-' + e.id;
+    if (diffMin >= -2 && diffMin <= 2 && !_tgNotificado[keyAhora]) {
+      _tgNotificado[keyAhora] = true;
+      new Notification('🔔 ¡Ahora! ' + e.titulo, {
+        body: (e.descripcion || tipoLabel),
+        icon: 'logo.png'
+      });
+      // Marcar como notificado en Supabase para no repetir
+      sbUpdate('eventos', e.id, { notificado: true });
+      e.notificado = true;
+    }
+  });
+ 
+  // ── PAGOS: notificación del navegador el día del vencimiento ─
+  _pagos.forEach(function(p) {
+    if (p.pagado) return;
+    var dVence   = diffDias(p.fecha_vence);
+    var keyHoy   = 'nav-pago-hoy-' + p.id;
+    var ahoraH   = ahora.getHours();
+    var ahoraM   = ahora.getMinutes();
+ 
+    // Solo una vez al día, a las 8 AM ±2 min
+    if (dVence === 0 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyHoy]) {
+      _tgNotificado[keyHoy] = true;
+      var lote = window.S && window.S.lots
+        ? window.S.lots.find(function(l) { return l.id === p.lot_id; })
+        : null;
+      var comprador = lote && lote.buyer ? lote.buyer : 'Lote ' + p.lot_id;
+      new Notification('💳 Araguatos — Cuota vence HOY', {
+        body: comprador + ' · Cuota #' + p.num_cuota + ' · ' + fmtMonto(p.monto),
+        icon: 'logo.png'
+      });
+    }
+  });
+}
 
   // Chequear cada minuto
   setInterval(function(){ _chequearNotificaciones(); _actualizarCampanita(); }, 60000);
