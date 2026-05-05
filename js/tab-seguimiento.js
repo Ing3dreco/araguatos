@@ -35,7 +35,8 @@ function tgEnviar(mensaje) {
   var _prospectos     = [];
   var _eventos        = [];
   var _vendedores     = [];
-  var _vendedorActivo = null;
+  var _vendedorActivo  = null;   // filtro prospectos
+  var _vendedorAgenda  = null;   // filtro agenda
   var _vistaActiva    = 'agenda';
   var _mesActual      = new Date();
   var _diaSeleccionado = null;
@@ -239,7 +240,7 @@ function tgEnviar(mensaje) {
 
     // PROSPECTOS: seguimientos atrasados o para hoy/mañana
     _prospectos.forEach(function(p) {
-      if (p.estado==='cerrado'||p.estado==='perdido'||!p.next_follow) return;
+      if (p.estado==='cerrado'||p.estado==='perdido'||p.estado==='referidos'||!p.next_follow) return;
       var d = diffDias(p.next_follow);
       if (d <= 1) {
         var cuando = d<0?'atrasado '+Math.abs(d)+' día(s)':d===0?'HOY':'mañana';
@@ -376,21 +377,45 @@ function tgEnviar(mensaje) {
      VISTA 1 — AGENDA
   ══════════════════════════════════════════════════════════ */
   function _renderAgenda(c) {
-    var hoyIso     = hoy();
-    var evHoy      = _eventos.filter(function(e){ return isoFecha(e.fecha)===hoyIso && !e.completado; });
-    var evProx     = _eventos.filter(function(e){ var d=diffDias(isoFecha(e.fecha)); return d>=0&&d<=7&&!e.completado; });
-    var evVencidos = _eventos.filter(function(e){ return diffDias(isoFecha(e.fecha))<0&&!e.completado; });
+    var hoyIso = hoy();
 
-    var panelLateral = _diaSeleccionado ? _panelDia(_diaSeleccionado) : _panelProximos();
+    /* Filtrar eventos por vendedor seleccionado en agenda */
+    var evsFiltrados = _vendedorAgenda
+      ? _eventos.filter(function(e){ return e.vendedor_id === _vendedorAgenda; })
+      : _eventos;
+
+    var evHoy      = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===hoyIso && !e.completado; });
+    var evProx     = evsFiltrados.filter(function(e){ var d=diffDias(isoFecha(e.fecha)); return d>=0&&d<=7&&!e.completado; });
+    var evVencidos = evsFiltrados.filter(function(e){ return diffDias(isoFecha(e.fecha))<0&&!e.completado; });
+
+    var panelLateral = _diaSeleccionado ? _panelDia(_diaSeleccionado, evsFiltrados) : _panelProximos(evsFiltrados);
+
+    /* Selector de vendedor para agenda */
+    var optsAgenda = '<option value="">👥 Todos los vendedores</option>' +
+      _vendedores.map(function(v){
+        return '<option value="'+v.id+'"'+(_vendedorAgenda===v.id?' selected':'')+'>'+v.nombre+'</option>';
+      }).join('');
+    var vendAgendaNombre = '';
+    if (_vendedorAgenda) {
+      var va = _vendedores.find(function(v){ return v.id===_vendedorAgenda; });
+      vendAgendaNombre = va ? ' — 👤 ' + va.nombre : '';
+    }
 
     c.innerHTML =
+      /* Barra filtro vendedor */
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
+      '<select id="segFiltroAgendaVend" onchange="window._segCambiarVendedorAgenda(this.value)" ' +
+      'style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;background:#fff">' +
+      optsAgenda + '</select>' +
+      '<div style="font-size:13px;font-weight:700;color:#1a237e">Agenda' + vendAgendaNombre + '</div>' +
+      '</div>' +
       '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">' +
       _kpiBox('🔴 Vencidos', evVencidos.length, '#ffebee','#c62828') +
       _kpiBox('🟡 Hoy',      evHoy.length,      '#fff3e0','#e65100') +
       _kpiBox('🔵 Próx. 7d', evProx.length,     '#e3f2fd','#1565c0') +
       '</div>' +
       '<div style="display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start">' +
-      '<div class="card" style="padding:16px">'+_buildCalendario()+'</div>' +
+      '<div class="card" style="padding:16px">'+_buildCalendario(evsFiltrados)+'</div>' +
       '<div>'+panelLateral+'</div>' +
       '</div>';
 
@@ -405,8 +430,9 @@ function tgEnviar(mensaje) {
     _pedirPermisoNotificacion();
   }
 
-  function _panelDia(isoD) {
-    var evsDia = _eventos.filter(function(e){ return isoFecha(e.fecha)===isoD; })
+  function _panelDia(isoD, evsFiltrados) {
+    var evsFiltrados = evsFiltrados || _eventos;
+    var evsDia = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===isoD; })
       .sort(function(a,b){ return (a.fecha||'')>(b.fecha||'')?1:-1; });
     var label = isoD===hoy()?'Hoy':fmtFecha(isoD);
     return '<div class="card" style="padding:14px">' +
@@ -422,8 +448,9 @@ function tgEnviar(mensaje) {
       )+'</div>';
   }
 
-  function _panelProximos() {
-    var proximos = _eventos.filter(function(e){
+  function _panelProximos(evsFiltrados) {
+    var evsFiltrados = evsFiltrados || _eventos;
+    var proximos = evsFiltrados.filter(function(e){
       var d=diffDias(isoFecha(e.fecha)); return d>=-1&&d<=14;
     }).sort(function(a,b){ return (a.fecha||'')>(b.fecha||'')?1:-1; });
     return '<div class="card" style="padding:14px">' +
@@ -438,11 +465,12 @@ function tgEnviar(mensaje) {
   }
 
   /* ── Calendario ───────────────────────────────────────────── */
-  function _buildCalendario() {
+  function _buildCalendario(evsFiltrados) {
+    var evsFiltrados = evsFiltrados || _eventos;
     var anio=_mesActual.getFullYear(), mes=_mesActual.getMonth(), hoyIso=hoy();
     var primerDia=new Date(anio,mes,1).getDay(), diasMes=new Date(anio,mes+1,0).getDate();
     var evMes={};
-    _eventos.forEach(function(e){
+    evsFiltrados.forEach(function(e){
       var eIso=isoFecha(e.fecha);
       if(eIso.slice(0,7)===anio+'-'+_pad(mes+1)){
         var d=parseInt(eIso.slice(8,10));
@@ -555,10 +583,38 @@ function tgEnviar(mensaje) {
     var pagadas=cuotas.filter(function(p){return p.pagado;}).length;
     var totalC=cuotas.length||lote.mo||0;
     var pct=totalC>0?Math.round(pagadas/totalC*100):0;
+
+    /* Cuota inicial del lote */
+    var precio  = Number(lote.salePrice) || 0;
+    var dnAmt   = Number(lote.dnAmt)     || precio * (lote.dn || 20) / 100;
+    var dnPagado= lote.dnPagado || false;
+    var dnFecha = lote.dnFecha  || lote.saleDate || null;
+    var dnNota  = lote.dnNota   || '';
+
+    /* Fila cuota inicial */
+    var sDn = dnPagado
+      ? { color:'#2e7d32', bg:'#e8f5e9', icono:'✅', label:'Pagado' }
+      : { color:'#1565c0', bg:'#e3f2fd', icono:'🔵', label:'Pendiente' };
+
+    var filaCuotaInicial =
+      '<tr style="border-top:2px solid #1565c0;background:#f0f4ff">' +
+      '<td style="padding:7px 10px;font-weight:800;color:#1565c0">CI</td>' +
+      '<td style="padding:7px 10px;color:#1565c0;font-weight:600">' + (dnFecha ? fmtFecha(dnFecha) : '— (ingreso)') + '</td>' +
+      '<td style="padding:7px 10px;text-align:right;font-weight:800;color:#1565c0">' + fmtMonto(dnAmt) + '</td>' +
+      '<td style="padding:7px 10px;text-align:center"><span style="background:'+sDn.bg+';color:'+sDn.color+';padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700">'+sDn.icono+' '+sDn.label+'</span></td>' +
+      '<td style="padding:7px 10px;color:#888">' + (dnPagado && dnFecha ? fmtFecha(dnFecha) : '—') + '</td>' +
+      '<td style="padding:7px 10px;color:#888;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (dnNota || '—') + '</td>' +
+      '<td style="padding:7px 10px;text-align:center;white-space:nowrap">' +
+      '<button class="btn bout bsm" onclick="window._segEditarCuotaInicial(\''+lote.id+'\')" style="font-size:11px;padding:4px 8px;margin-right:4px">✏️</button>' +
+      (!dnPagado
+        ? '<button class="btn bg bsm" onclick="window._segPagarCuotaInicial(\''+lote.id+'\')" style="font-size:11px;padding:4px 10px">✓ Pagar</button>'
+        : '<button class="btn bout bsm" onclick="window._segDesmarcarCI(\''+lote.id+'\')" style="font-size:11px;padding:4px 10px;color:#888">↩</button>'
+      ) + '</td></tr>';
+
     return '<div class="card" style="margin-bottom:12px">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">' +
       '<div><div style="font-size:14px;font-weight:800;color:#1a237e">Lote '+lote.id+' — '+(lote.buyer||'—')+'</div>' +
-      '<div style="font-size:11px;color:#666;margin-top:2px">C.C. '+(lote.cc||'—')+' · '+(lote.phone||'—')+' · '+(lote.mo||'—')+' meses</div></div>' +
+      '<div style="font-size:11px;color:#666;margin-top:2px">C.C. '+(lote.cc||'—')+' · '+(lote.phone||'—')+' · '+(lote.mo||'—')+' meses · CI: '+fmtMonto(dnAmt)+'</div></div>' +
       '<div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#2e7d32">'+pagadas+'/'+totalC+' cuotas</div>' +
       '<div style="font-size:11px;color:#888">'+pct+'% pagado</div></div></div>' +
       '<div style="height:6px;background:#e0e0e0;border-radius:3px;margin-bottom:12px">' +
@@ -575,6 +631,7 @@ function tgEnviar(mensaje) {
         '<th style="padding:7px 10px;text-align:left">Nota</th>' +
         '<th style="padding:7px 10px;text-align:center">Acción</th>' +
         '</tr></thead><tbody>' +
+        filaCuotaInicial +
         cuotas.map(function(p){
           var s=semaforo(p);
           return '<tr style="border-top:1px solid #f0f0f0">' +
@@ -603,7 +660,7 @@ function tgEnviar(mensaje) {
     {id:'presentacion',label:'📋 Presentación', color:'#6a1b9a',bg:'#f3e5f5'},
     {id:'negociacion', label:'🤝 Negociación',  color:'#e65100',bg:'#fff3e0'},
     {id:'cerrado',     label:'✅ Cerrado',       color:'#2e7d32',bg:'#e8f5e9'},
-    {id:'perdido',     label:'❌ Perdido',        color:'#757575',bg:'#f5f5f5'},
+    {id:'perdido',     label:'❌ Dame Referidos',  color:'#757575',bg:'#f5f5f5'},
   ];
 
   function _renderProspectos(c) {
@@ -836,7 +893,16 @@ function _abrirModalEvento(e, fechaPresel) {
       descripcion  : document.getElementById('segEvDesc').value.trim(),
       relacionado  : document.getElementById('segEvRel').value.trim(),
     };
-    if (!esEdicion) { datos.completado = false; datos.notificado = false; }
+    if (!esEdicion) {
+      datos.completado = false;
+      datos.notificado = false;
+    } else {
+      datos.notificado = false;
+      var keyAnterior = 'nav-ev-ahora-' + e.id;
+      var keyMinAnt   = 'nav-ev-min-'   + e.id;
+      delete _tgNotificado[keyAnterior];
+      delete _tgNotificado[keyMinAnt];
+    }
  
     var op = esEdicion ? sbUpdate('eventos', e.id, datos) : sbInsert('eventos', datos);
     op.then(function (res) {
@@ -991,6 +1057,92 @@ function _abrirModalEvento(e, fechaPresel) {
   /* ══════════════════════════════════════════════════════════
      ACCIONES — PROSPECTOS
   ══════════════════════════════════════════════════════════ */
+
+  /* ── Cuota Inicial: editar, pagar, desmarcar ──────────────── */
+  window._segEditarCuotaInicial = function(loteId) {
+    var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
+    if (!lote) return;
+    var dnAmt = Number(lote.dnAmt) || 0;
+
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de pago / ingreso</label>' +
+      '<input id="segCIFecha" type="date" value="'+(lote.dnFecha||lote.saleDate||'')+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto cuota inicial (en millones COP)</label>' +
+      '<input id="segCIMonto" type="number" step="0.0001" value="'+dnAmt+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+      '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCIMontoPreview"></div>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nota / Comprobante</label>' +
+      '<input id="segCINota" type="text" value="'+(lote.dnNota||'')+'" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
+
+    _abrirModal('✏️ Editar cuota inicial — Lote '+loteId, body, function() {
+      var nuevoMonto = parseFloat(document.getElementById('segCIMonto').value);
+      var nuevaFecha = document.getElementById('segCIFecha').value;
+      var nuevaNota  = document.getElementById('segCINota').value.trim();
+      if (isNaN(nuevoMonto) || nuevoMonto < 0) { alert('Ingresa un monto válido.'); return; }
+      lote.dnAmt  = nuevoMonto;
+      lote.dnFecha = nuevaFecha;
+      lote.dnNota  = nuevaNota;
+      if (typeof saveS === 'function') saveS();
+      if (typeof syncLot === 'function') syncLot(lote);
+      _cerrarModal();
+      _renderVista();
+    });
+
+    setTimeout(function() {
+      var inp = document.getElementById('segCIMonto');
+      var prev = document.getElementById('segCIMontoPreview');
+      if (!inp || !prev) return;
+      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
+      inp.addEventListener('input', act); act();
+    }, 100);
+  };
+
+  window._segPagarCuotaInicial = function(loteId) {
+    var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
+    if (!lote) return;
+    var dnAmt = Number(lote.dnAmt) || 0;
+
+    var body =
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de pago</label>' +
+      '<input id="segCIPFecha" type="date" value="'+hoy()+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto recibido (en millones COP)</label>' +
+      '<input id="segCIPMonto" type="number" step="0.0001" value="'+dnAmt+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+      '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCIPMontoPreview"></div>' +
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nota / Comprobante</label>' +
+      '<input id="segCIPNota" type="text" value="" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
+
+    _abrirModal('✓ Registrar pago — Cuota Inicial Lote '+loteId, body, function() {
+      var monto = parseFloat(document.getElementById('segCIPMonto').value) || dnAmt;
+      var fecha = document.getElementById('segCIPFecha').value || hoy();
+      var nota  = document.getElementById('segCIPNota').value.trim();
+      lote.dnPagado = true;
+      lote.dnAmt    = monto;
+      lote.dnFecha  = fecha;
+      lote.dnNota   = nota;
+      if (typeof saveS === 'function') saveS();
+      if (typeof syncLot === 'function') syncLot(lote);
+      _cerrarModal();
+      _renderVista();
+    });
+
+    setTimeout(function() {
+      var inp = document.getElementById('segCIPMonto');
+      var prev = document.getElementById('segCIPMontoPreview');
+      if (!inp || !prev) return;
+      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
+      inp.addEventListener('input', act); act();
+    }, 100);
+  };
+
+  window._segDesmarcarCI = function(loteId) {
+    if (!confirm('¿Desmarcar la cuota inicial como no pagada?')) return;
+    var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
+    if (!lote) return;
+    lote.dnPagado = false;
+    if (typeof saveS === 'function') saveS();
+    if (typeof syncLot === 'function') syncLot(lote);
+    _renderVista();
+  };
+
   window._segNuevoProspecto = function(datos) {
     var d = datos || {};
     var optsVend = '<option value="">— Sin vendedor asignado —</option>' +
@@ -1013,18 +1165,14 @@ function _abrirModalEvento(e, fechaPresel) {
     _abrirModal((d.id ? '✏️ Editar prospecto' : '👥 Nuevo prospecto'), body, function() {
       var nombre = (document.getElementById('segPrNombre').value || '').trim();
       if (!nombre) { alert('El nombre es obligatorio.'); return; }
-      var nuevoFollow = document.getElementById('segPrFollow').value || null;
       var payload = {
         nombre      : nombre,
         telefono    : document.getElementById('segPrTel').value.trim(),
         estado      : document.getElementById('segPrEstado').value,
         vendedor_id : document.getElementById('segPrVendedor').value || null,
-        next_follow : nuevoFollow,
+        next_follow : document.getElementById('segPrFollow').value || null,
         notas       : document.getElementById('segPrNotas').value.trim(),
-        updated_at  : new Date().toISOString(),
-        // Si cambió la fecha de seguimiento, resetear notificado
-        // para que vuelva a notificar en la nueva fecha
-        notificado  : (d.id && d.next_follow === nuevoFollow) ? (d.notificado || false) : false
+        updated_at  : new Date().toISOString()
       };
       var op = d.id ? sbUpdate('prospectos', d.id, payload) : sbInsert('prospectos', payload);
       op.then(function(res) {
@@ -1088,6 +1236,12 @@ function _abrirModalEvento(e, fechaPresel) {
       if (idx >= 0) _prospectos[idx].estado = nuevoEstado;
       _cerrarModal(); _renderVista(); _actualizarCampanita();
     });
+  };
+
+  window._segCambiarVendedorAgenda = function(id) {
+    _vendedorAgenda = id || null;
+    _diaSeleccionado = null;
+    _renderVista();
   };
 
   window._segCambiarVendedor = function(id) { _vendedorActivo = id || null; _renderVista(); };
@@ -1168,8 +1322,8 @@ function _abrirModalEvento(e, fechaPresel) {
     if('Notification' in window && Notification.permission==='default') Notification.requestPermission();
   }
 
-  /* ── Caché en memoria (bloquea duplicados en el mismo ciclo) ── */
-  var _notifMemoria = {};
+  /* Tracks what we already notified to avoid duplicates */
+  var _tgNotificado = {};  // key → true
 
   function _nombreVendedorEvento(e) {
     if (!e.vendedor_id) return '';
@@ -1177,69 +1331,62 @@ function _abrirModalEvento(e, fechaPresel) {
     return v ? v.nombre.toUpperCase() : '';
   }
 
-  function _chequearNotificaciones() {
-    if (!('Notification' in window) || Notification.permission !== 'granted') return;
-
-    var ahora  = new Date();
-    var ahoraH = ahora.getHours();
-    var ahoraM = ahora.getMinutes();
-
-    // ── EVENTOS ───────────────────────────────────────────────
-    // Columna existente: "notificado" (boolean)
-    // La usamos para el inicio del evento.
-    // Para el recordatorio previo usamos _notifMemoria (vive en la sesión).
-    _eventos.forEach(function(e) {
-      if (e.completado || !e.fecha || !e.fecha.includes('T')) return;
-
-      var fechaEv   = new Date(e.fecha);
-      var diffMin   = Math.round((fechaEv - ahora) / 60000);
-      var tipoLabel = e.tipo
-        ? e.tipo.charAt(0).toUpperCase() + e.tipo.slice(1)
-        : 'Evento';
-
-      // Recordatorio configurable — ventana ±1 min
-      // Solo usa _notifMemoria porque este recordatorio es puntual
-      // (si recargas la página ya pasó el momento, no hay duplicado)
-      var reminder = e.reminder_min || 60;
-      var claveRec = 'rec-' + e.id + '-r' + reminder;
-      if (Math.abs(diffMin - reminder) <= 1 && !_notifMemoria[claveRec]) {
-        _notifMemoria[claveRec] = true;
-        var cuandoStr = reminder >= 1440 ? 'en 1 día'
-          : reminder >= 60  ? 'en ' + Math.round(reminder / 60) + 'h'
-          : 'en ' + reminder + 'min';
-        new Notification('⏰ Araguatos — ' + cuandoStr + ': ' + e.titulo, {
-          body: tipoLabel + (fmtHora(e.fecha) ? ' a las ' + fmtHora(e.fecha) : ''),
-          icon: 'logo.png'
-        });
-      }
-
-      // Notificación de inicio — ventana ±1 min
-      // Usa e.notificado (columna SB existente) → funciona en cualquier dispositivo
-      if (diffMin >= -1 && diffMin <= 1 && !e.notificado) {
-        e.notificado = true;
-        sbUpdate('eventos', e.id, { notificado: true });
-        new Notification('🔔 ¡Ahora! ' + e.titulo, {
-          body: (e.descripcion || tipoLabel),
-          icon: 'logo.png'
-        });
-      }
-    });
-
-    // ── PAGOS y PROSPECTOS: solo a las 8:00 AM exactas ────────
-    // Igual que eventos: columna "notificado" boolean en SB.
-    // Al notificar → notificado = true → cualquier dispositivo
-    // que cargue los datos ya verá notificado = true y no repite.
-    // El reset diario se hace al registrar el pago / al editar el prospecto.
-    if (ahoraH !== 8 || ahoraM !== 0) return;
-
-    // Pagos que vencen hoy
-    _pagos.forEach(function(p) {
-      if (p.pagado || diffDias(p.fecha_vence) !== 0) return;
-      if (p.notificado) return;                        // ya notificado (SB)
-      if (_notifMemoria['pago-' + p.id]) return;       // ya en este ciclo
-      _notifMemoria['pago-' + p.id] = true;
-      p.notificado = true;
-      sbUpdate('pagos', p.id, { notificado: true });
+ function _chequearNotificaciones() {
+  // Solo notificaciones del navegador — Telegram va por el cron
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+ 
+  var ahora   = new Date();
+  var hoyIso  = hoy();
+ 
+  // ── EVENTOS: notificación del navegador cuando empieza ────
+  _eventos.forEach(function(e) {
+    if (e.completado || !e.fecha || !e.fecha.includes('T')) return;
+ 
+    var fechaEv = new Date(e.fecha);
+    var diffMin = Math.round((fechaEv - ahora) / 60000);
+    var tipoLabel = e.tipo
+      ? e.tipo.charAt(0).toUpperCase() + e.tipo.slice(1)
+      : 'Evento';
+ 
+    // Notificación del navegador según el recordatorio configurado
+    var reminder = e.reminder_min || 60;
+    var keyMin   = 'nav-ev-min-' + e.id;
+    if (Math.abs(diffMin - reminder) <= 2 && !_tgNotificado[keyMin]) {
+      _tgNotificado[keyMin] = true;
+      var cuandoStr = reminder >= 1440 ? 'en 1 día'
+        : reminder >= 60 ? 'en ' + Math.round(reminder / 60) + 'h'
+        : 'en ' + reminder + 'min';
+      new Notification('⏰ Araguatos — ' + cuandoStr + ': ' + e.titulo, {
+        body: tipoLabel + (fmtHora(e.fecha) ? ' a las ' + fmtHora(e.fecha) : ''),
+        icon: 'logo.png'
+      });
+    }
+ 
+    // Notificación cuando el evento empieza (±2 min)
+    var keyAhora = 'nav-ev-ahora-' + e.id;
+    if (diffMin >= -2 && diffMin <= 2 && !_tgNotificado[keyAhora]) {
+      _tgNotificado[keyAhora] = true;
+      new Notification('🔔 ¡Ahora! ' + e.titulo, {
+        body: (e.descripcion || tipoLabel),
+        icon: 'logo.png'
+      });
+      // Marcar como notificado en Supabase para no repetir
+      sbUpdate('eventos', e.id, { notificado: true });
+      e.notificado = true;
+    }
+  });
+ 
+  // ── PAGOS: notificación del navegador el día del vencimiento ─
+  _pagos.forEach(function(p) {
+    if (p.pagado) return;
+    var dVence   = diffDias(p.fecha_vence);
+    var keyHoy   = 'nav-pago-hoy-' + p.id;
+    var ahoraH   = ahora.getHours();
+    var ahoraM   = ahora.getMinutes();
+ 
+    // Solo una vez al día, a las 8 AM ±2 min
+    if (dVence === 0 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyHoy]) {
+      _tgNotificado[keyHoy] = true;
       var lote = window.S && window.S.lots
         ? window.S.lots.find(function(l) { return l.id === p.lot_id; })
         : null;
@@ -1248,24 +1395,9 @@ function _abrirModalEvento(e, fechaPresel) {
         body: comprador + ' · Cuota #' + p.num_cuota + ' · ' + fmtMonto(p.monto),
         icon: 'logo.png'
       });
-    });
-
-    // Prospectos con seguimiento hoy
-    _prospectos.forEach(function(p) {
-      if (p.estado === 'cerrado' || p.estado === 'perdido') return;
-      if (!p.next_follow || diffDias(p.next_follow) !== 0) return;
-      if (p.notificado) return;                        // ya notificado (SB)
-      if (_notifMemoria['pros-' + p.id]) return;       // ya en este ciclo
-      _notifMemoria['pros-' + p.id] = true;
-      p.notificado = true;
-      sbUpdate('prospectos', p.id, { notificado: true });
-      var vend = _vendedores.find(function(v) { return v.id === p.vendedor_id; });
-      new Notification('👥 Araguatos — Seguimiento HOY', {
-        body: p.nombre + (vend ? ' · ' + vend.nombre : '') + (p.telefono ? ' · ' + p.telefono : ''),
-        icon: 'logo.png'
-      });
-    });
-  }
+    }
+  });
+}
 
   // Chequear cada minuto
   setInterval(function(){ _chequearNotificaciones(); _actualizarCampanita(); }, 60000);
