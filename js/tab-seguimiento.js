@@ -1018,9 +1018,10 @@ function _abrirModalEvento(e, fechaPresel) {
 
   window._segDesmarcarPago = function(pagoId) {
     if (!confirm('¿Desmarcar este pago como no realizado?')) return;
-    sbUpdate('pagos', pagoId, { pagado: false, fecha_pago: null, nota: '' }).then(function() {
+    // Resetear notificado para que vuelva a avisar cuando corresponda
+    sbUpdate('pagos', pagoId, { pagado: false, fecha_pago: null, nota: '', notificado: false }).then(function() {
       var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
-      if (idx >= 0) { _pagos[idx].pagado = false; _pagos[idx].fecha_pago = null; }
+      if (idx >= 0) { _pagos[idx].pagado = false; _pagos[idx].fecha_pago = null; _pagos[idx].notificado = false; }
       _renderVista(); _actualizarCampanita();
     });
   };
@@ -1039,9 +1040,10 @@ function _abrirModalEvento(e, fechaPresel) {
       var nuevoMonto  = parseFloat(document.getElementById('segCuotaMonto').value);
       if (!nuevaFecha) { alert('La fecha es obligatoria.'); return; }
       if (isNaN(nuevoMonto) || nuevoMonto <= 0) { alert('Ingresa un monto válido.'); return; }
-      sbUpdate('pagos', pagoId, { fecha_vence: nuevaFecha, monto: nuevoMonto }).then(function() {
+      // Resetear notificado al cambiar fecha para que vuelva a notificar
+      sbUpdate('pagos', pagoId, { fecha_vence: nuevaFecha, monto: nuevoMonto, notificado: false }).then(function() {
         var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
-        if (idx >= 0) { _pagos[idx].fecha_vence = nuevaFecha; _pagos[idx].monto = nuevoMonto; }
+        if (idx >= 0) { _pagos[idx].fecha_vence = nuevaFecha; _pagos[idx].monto = nuevoMonto; _pagos[idx].notificado = false; }
         _cerrarModal(); _renderVista();
       }).catch(function(e){ alert('Error: ' + e.message); });
     });
@@ -1165,14 +1167,18 @@ function _abrirModalEvento(e, fechaPresel) {
     _abrirModal((d.id ? '✏️ Editar prospecto' : '👥 Nuevo prospecto'), body, function() {
       var nombre = (document.getElementById('segPrNombre').value || '').trim();
       if (!nombre) { alert('El nombre es obligatorio.'); return; }
+      var nuevoFollow = document.getElementById('segPrFollow').value || null;
+      var followCambio = d.id && nuevoFollow !== (d.next_follow || null);
       var payload = {
         nombre      : nombre,
         telefono    : document.getElementById('segPrTel').value.trim(),
         estado      : document.getElementById('segPrEstado').value,
         vendedor_id : document.getElementById('segPrVendedor').value || null,
-        next_follow : document.getElementById('segPrFollow').value || null,
+        next_follow : nuevoFollow,
         notas       : document.getElementById('segPrNotas').value.trim(),
-        updated_at  : new Date().toISOString()
+        updated_at  : new Date().toISOString(),
+        // Resetear notificado si cambia la fecha de seguimiento o es nuevo
+        notificado  : false
       };
       var op = d.id ? sbUpdate('prospectos', d.id, payload) : sbInsert('prospectos', payload);
       op.then(function(res) {
@@ -1379,22 +1385,81 @@ function _abrirModalEvento(e, fechaPresel) {
   // ── PAGOS: notificación del navegador el día del vencimiento ─
   _pagos.forEach(function(p) {
     if (p.pagado) return;
-    var dVence   = diffDias(p.fecha_vence);
-    var keyHoy   = 'nav-pago-hoy-' + p.id;
-    var ahoraH   = ahora.getHours();
-    var ahoraM   = ahora.getMinutes();
- 
-    // Solo una vez al día, a las 8 AM ±2 min
-    if (dVence === 0 && ahoraH === 8 && ahoraM <= 2 && !_tgNotificado[keyHoy]) {
-      _tgNotificado[keyHoy] = true;
+    var dVence = diffDias(p.fecha_vence);
+    var ahoraH = ahora.getHours();
+    var ahoraM = ahora.getMinutes();
+
+    // Solo notificar a las 8 AM ±2 min para cuotas que vencen hoy o mañana
+    if ((dVence === 0 || dVence === 1) && ahoraH === 8 && ahoraM <= 2) {
+
+      // Saltar si ya fue notificado en Supabase (columna notificado = true)
+      if (p.notificado) return;
+
       var lote = window.S && window.S.lots
         ? window.S.lots.find(function(l) { return l.id === p.lot_id; })
         : null;
       var comprador = lote && lote.buyer ? lote.buyer : 'Lote ' + p.lot_id;
-      new Notification('💳 Araguatos — Cuota vence HOY', {
-        body: comprador + ' · Cuota #' + p.num_cuota + ' · ' + fmtMonto(p.monto),
-        icon: 'logo.png'
-      });
+      var cuando = dVence === 0 ? 'HOY' : 'MAÑANA';
+      var titulo = '💳 Araguatos — Cuota vence ' + cuando;
+      var cuerpo = comprador + ' · Cuota #' + p.num_cuota + ' · ' + fmtMonto(p.monto);
+
+      // Notificación del navegador
+      new Notification(titulo, { body: cuerpo, icon: 'logo.png' });
+
+      // Notificación a Telegram
+      tgEnviar(titulo + '\n' + cuerpo + '\nVence: ' + fmtFecha(p.fecha_vence));
+
+      // Marcar como notificado en Supabase para no repetir
+      sbUpdate('pagos', p.id, { notificado: true });
+      p.notificado = true;
+    }
+
+    // Cuotas vencidas (mora): notificar una sola vez también
+    if (dVence < 0 && !p.notificado && ahoraH === 8 && ahoraM <= 2) {
+      var lote2 = window.S && window.S.lots
+        ? window.S.lots.find(function(l) { return l.id === p.lot_id; })
+        : null;
+      var comprador2 = lote2 && lote2.buyer ? lote2.buyer : 'Lote ' + p.lot_id;
+      var titulo2 = '🔴 Araguatos — Cuota en MORA';
+      var cuerpo2 = comprador2 + ' · Cuota #' + p.num_cuota + ' · Vencida hace ' + Math.abs(dVence) + ' día(s) · ' + fmtMonto(p.monto);
+
+      new Notification(titulo2, { body: cuerpo2, icon: 'logo.png' });
+      tgEnviar(titulo2 + '\n' + cuerpo2);
+
+      sbUpdate('pagos', p.id, { notificado: true });
+      p.notificado = true;
+    }
+  });
+
+  // ── PROSPECTOS: notificar 1 día antes y el día del seguimiento ──
+  _prospectos.forEach(function(p) {
+    if (p.estado === 'cerrado' || p.estado === 'perdido' || !p.next_follow) return;
+    if (p.notificado) return;
+
+    var dSeg   = diffDias(p.next_follow);
+    var ahoraH = ahora.getHours();
+    var ahoraM = ahora.getMinutes();
+
+    // Solo a las 8 AM ±2 min
+    if (ahoraH !== 8 || ahoraM > 2) return;
+
+    if (dSeg === 1 || dSeg === 0) {
+      var vend = _vendedores.find(function(v) { return v.id === p.vendedor_id; });
+      var vendNombre = vend ? ' (' + vend.nombre + ')' : '';
+      var cuando = dSeg === 0 ? 'HOY' : 'MAÑANA';
+      var titulo = '👥 Araguatos — Seguimiento ' + cuando + ': ' + p.nombre;
+      var cuerpo = (p.telefono ? '📞 ' + p.telefono : '') + vendNombre +
+                   (p.notas ? '\n' + p.notas : '');
+
+      // Notificación del navegador
+      new Notification(titulo, { body: cuerpo || p.nombre, icon: 'logo.png' });
+
+      // Notificación a Telegram
+      tgEnviar(titulo + (cuerpo ? '\n' + cuerpo : ''));
+
+      // Marcar como notificado en Supabase
+      sbUpdate('prospectos', p.id, { notificado: true });
+      p.notificado = true;
     }
   });
 }
