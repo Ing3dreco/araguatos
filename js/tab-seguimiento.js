@@ -1385,15 +1385,19 @@ function _abrirModalEvento(e, fechaPresel) {
   // ── PAGOS: notificación del navegador el día del vencimiento ─
   _pagos.forEach(function(p) {
     if (p.pagado) return;
+    if (p.notificado) return;  // ya notificado — evitar duplicados
+
     var dVence = diffDias(p.fecha_vence);
     var ahoraH = ahora.getHours();
     var ahoraM = ahora.getMinutes();
 
-    // Solo notificar a las 8 AM ±2 min para cuotas que vencen hoy o mañana
-    if ((dVence === 0 || dVence === 1) && ahoraH === 8 && ahoraM <= 2) {
+    // Solo a las 8:00 AM exacto (minuto === 0) para evitar duplicados del setInterval
+    if (ahoraH !== 8 || ahoraM !== 0) return;
 
-      // Saltar si ya fue notificado en Supabase (columna notificado = true)
-      if (p.notificado) return;
+    if (dVence === 0 || dVence === 1) {
+      // Marcar en memoria ANTES de la llamada asíncrona para que
+      // el siguiente tick del intervalo (8:01) ya lo vea bloqueado
+      p.notificado = true;
 
       var lote = window.S && window.S.lots
         ? window.S.lots.find(function(l) { return l.id === p.lot_id; })
@@ -1403,47 +1407,45 @@ function _abrirModalEvento(e, fechaPresel) {
       var titulo = '💳 Araguatos — Cuota vence ' + cuando;
       var cuerpo = comprador + ' · Cuota #' + p.num_cuota + ' · ' + fmtMonto(p.monto);
 
-      // Notificación del navegador
       new Notification(titulo, { body: cuerpo, icon: 'logo.png' });
-
-      // Notificación a Telegram
       tgEnviar(titulo + '\n' + cuerpo + '\nVence: ' + fmtFecha(p.fecha_vence));
-
-      // Marcar como notificado en Supabase para no repetir
       sbUpdate('pagos', p.id, { notificado: true });
-      p.notificado = true;
     }
 
-    // Cuotas vencidas (mora): notificar una sola vez también
-    if (dVence < 0 && !p.notificado && ahoraH === 8 && ahoraM <= 2) {
+    if (dVence < 0) {
+      // Cuota en mora — marcar en memoria primero
+      p.notificado = true;
+
       var lote2 = window.S && window.S.lots
         ? window.S.lots.find(function(l) { return l.id === p.lot_id; })
         : null;
       var comprador2 = lote2 && lote2.buyer ? lote2.buyer : 'Lote ' + p.lot_id;
       var titulo2 = '🔴 Araguatos — Cuota en MORA';
-      var cuerpo2 = comprador2 + ' · Cuota #' + p.num_cuota + ' · Vencida hace ' + Math.abs(dVence) + ' día(s) · ' + fmtMonto(p.monto);
+      var cuerpo2 = comprador2 + ' · Cuota #' + p.num_cuota +
+                    ' · Vencida hace ' + Math.abs(dVence) + ' día(s) · ' + fmtMonto(p.monto);
 
       new Notification(titulo2, { body: cuerpo2, icon: 'logo.png' });
       tgEnviar(titulo2 + '\n' + cuerpo2);
-
       sbUpdate('pagos', p.id, { notificado: true });
-      p.notificado = true;
     }
   });
 
   // ── PROSPECTOS: notificar 1 día antes y el día del seguimiento ──
   _prospectos.forEach(function(p) {
     if (p.estado === 'cerrado' || p.estado === 'perdido' || !p.next_follow) return;
-    if (p.notificado) return;
+    if (p.notificado) return;  // ya notificado — evitar duplicados
 
     var dSeg   = diffDias(p.next_follow);
     var ahoraH = ahora.getHours();
     var ahoraM = ahora.getMinutes();
 
-    // Solo a las 8 AM ±2 min
-    if (ahoraH !== 8 || ahoraM > 2) return;
+    // Solo a las 8:00 AM exacto (minuto === 0) para evitar duplicados del setInterval
+    if (ahoraH !== 8 || ahoraM !== 0) return;
 
     if (dSeg === 1 || dSeg === 0) {
+      // Marcar en memoria ANTES de la llamada asíncrona
+      p.notificado = true;
+
       var vend = _vendedores.find(function(v) { return v.id === p.vendedor_id; });
       var vendNombre = vend ? ' (' + vend.nombre + ')' : '';
       var cuando = dSeg === 0 ? 'HOY' : 'MAÑANA';
@@ -1451,15 +1453,9 @@ function _abrirModalEvento(e, fechaPresel) {
       var cuerpo = (p.telefono ? '📞 ' + p.telefono : '') + vendNombre +
                    (p.notas ? '\n' + p.notas : '');
 
-      // Notificación del navegador
       new Notification(titulo, { body: cuerpo || p.nombre, icon: 'logo.png' });
-
-      // Notificación a Telegram
       tgEnviar(titulo + (cuerpo ? '\n' + cuerpo : ''));
-
-      // Marcar como notificado en Supabase
       sbUpdate('prospectos', p.id, { notificado: true });
-      p.notificado = true;
     }
   });
 }
