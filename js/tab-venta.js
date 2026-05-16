@@ -74,7 +74,7 @@ function sLot(id) {
 function rLotList() {
   var el = G('saleMapSvg');
   if (!el) return;
-  var manzanas = ['A','B','C','D'];
+  var manzanas = ['A','B','C','D','E'];
   var html = '';
   manzanas.forEach(function(mz) {
     var lots = S.lots.filter(function(l){ return l.m===mz; })
