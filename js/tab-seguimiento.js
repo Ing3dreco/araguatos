@@ -587,9 +587,10 @@ function tgEnviar(mensaje) {
     /* Cuota inicial del lote */
     var precio  = Number(lote.salePrice) || 0;
     var dnAmt   = Number(lote.dnAmt)     || precio * (lote.dn || 20) / 100;
-    var dnPagado= lote.dnPagado || false;
-    var dnFecha = lote.dnFecha  || lote.saleDate || null;
-    var dnNota  = lote.dnNota   || '';
+    var ciRow   = _pagos.find(function(p){ return p.lot_id === lote.id && p.num_cuota === 0; });
+    var dnPagado= ciRow ? ciRow.pagado     : (lote.dnPagado || false);
+    var dnFecha = ciRow ? ciRow.fecha_pago : (lote.dnFecha  || lote.saleDate || null);
+    var dnNota  = ciRow ? ciRow.nota       : (lote.dnNota   || '');
 
     /* Fila cuota inicial */
     var sDn = dnPagado
@@ -1099,52 +1100,94 @@ function _abrirModalEvento(e, fechaPresel) {
   };
 
   window._segPagarCuotaInicial = function(loteId) {
-    var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
-    if (!lote) return;
-    var dnAmt = Number(lote.dnAmt) || 0;
+  var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
+  if (!lote) return;
+  var dnAmt = Number(lote.dnAmt) || 0;
 
-    var body =
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de pago</label>' +
-      '<input id="segCIPFecha" type="date" value="'+hoy()+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto recibido (en millones COP)</label>' +
-      '<input id="segCIPMonto" type="number" step="0.0001" value="'+dnAmt+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
-      '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCIPMontoPreview"></div>' +
-      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nota / Comprobante</label>' +
-      '<input id="segCIPNota" type="text" value="" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
+  var body =
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de pago</label>' +
+    '<input id="segCIPFecha" type="date" value="'+hoy()+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto recibido (en millones COP)</label>' +
+    '<input id="segCIPMonto" type="number" step="0.0001" value="'+dnAmt+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+    '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCIPMontoPreview"></div>' +
+    '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nota / Comprobante</label>' +
+    '<input id="segCIPNota" type="text" value="" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
 
-    _abrirModal('✓ Registrar pago — Cuota Inicial Lote '+loteId, body, function() {
-      var monto = parseFloat(document.getElementById('segCIPMonto').value) || dnAmt;
-      var fecha = document.getElementById('segCIPFecha').value || hoy();
-      var nota  = document.getElementById('segCIPNota').value.trim();
-      lote.dnPagado = true;
-      lote.dnAmt    = monto;
-      lote.dnFecha  = fecha;
-      lote.dnNota   = nota;
-      if (typeof saveS === 'function') saveS();
-      if (typeof syncLot === 'function') syncLot(lote);
-      _cerrarModal();
-      _renderVista();
-    });
+  _abrirModal('✓ Registrar pago — Cuota Inicial Lote '+loteId, body, function() {
+    var monto = parseFloat(document.getElementById('segCIPMonto').value) || dnAmt;
+    var fecha = document.getElementById('segCIPFecha').value || hoy();
+    var nota  = document.getElementById('segCIPNota').value.trim();
 
-    setTimeout(function() {
-      var inp = document.getElementById('segCIPMonto');
-      var prev = document.getElementById('segCIPMontoPreview');
-      if (!inp || !prev) return;
-      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
-      inp.addEventListener('input', act); act();
-    }, 100);
-  };
-
-  window._segDesmarcarCI = function(loteId) {
-    if (!confirm('¿Desmarcar la cuota inicial como no pagada?')) return;
-    var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
-    if (!lote) return;
-    lote.dnPagado = false;
+    // 1. Actualizar objeto lote en memoria
+    lote.dnPagado = true;
+    lote.dnAmt    = monto;
+    lote.dnFecha  = fecha;
+    lote.dnNota   = nota;
     if (typeof saveS === 'function') saveS();
     if (typeof syncLot === 'function') syncLot(lote);
-    _renderVista();
-  };
 
+    // 2. Buscar si ya existe fila CI en pagos (num_cuota = 0)
+    var ciExistente = _pagos.find(function(p){ return p.lot_id === loteId && p.num_cuota === 0; });
+
+    if (ciExistente) {
+      // Ya existe — solo actualizar
+      sbUpdate('pagos', ciExistente.id, {
+        pagado: true, fecha_pago: fecha, monto: monto, nota: nota
+      }).then(function() {
+        ciExistente.pagado     = true;
+        ciExistente.fecha_pago = fecha;
+        ciExistente.monto      = monto;
+        ciExistente.nota       = nota;
+        _cerrarModal(); _renderVista();
+      }).catch(function(e){ alert('Error: ' + e.message); });
+    } else {
+      // No existe — insertar fila nueva con num_cuota = 0
+      sbInsert('pagos', {
+        lot_id: loteId, num_cuota: 0,
+        fecha_vence: lote.dnFecha || lote.saleDate || hoy(),
+        monto: monto, pagado: true,
+        fecha_pago: fecha, nota: nota
+      }).then(function(res) {
+        if (Array.isArray(res)) _pagos = _pagos.concat(res);
+        _cerrarModal(); _renderVista();
+      }).catch(function(e){ alert('Error: ' + e.message); });
+    }
+  });
+
+  setTimeout(function() {
+    var inp = document.getElementById('segCIPMonto');
+    var prev = document.getElementById('segCIPMontoPreview');
+    if (!inp || !prev) return;
+    function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
+    inp.addEventListener('input', act); act();
+  }, 100);
+};
+
+  window._segDesmarcarCI = function(loteId) {
+  if (!confirm('¿Desmarcar la cuota inicial como no pagada?')) return;
+  var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
+  if (!lote) return;
+
+  // 1. Actualizar objeto lote en memoria
+  lote.dnPagado = false;
+  if (typeof saveS === 'function') saveS();
+  if (typeof syncLot === 'function') syncLot(lote);
+
+  // 2. Actualizar en Supabase si existe la fila CI
+  var ciExistente = _pagos.find(function(p){ return p.lot_id === loteId && p.num_cuota === 0; });
+  if (ciExistente) {
+    sbUpdate('pagos', ciExistente.id, {
+      pagado: false, fecha_pago: null, nota: ''
+    }).then(function() {
+      ciExistente.pagado     = false;
+      ciExistente.fecha_pago = null;
+      ciExistente.nota       = '';
+      _renderVista();
+    }).catch(function(e){ alert('Error: ' + e.message); });
+  } else {
+    _renderVista();
+  }
+};
   window._segNuevoProspecto = function(datos) {
     var d = datos || {};
     var optsVend = '<option value="">— Sin vendedor asignado —</option>' +
