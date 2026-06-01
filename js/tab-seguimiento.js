@@ -579,7 +579,7 @@ function tgEnviar(mensaje) {
   }
 
   function _seccionLote(lote) {
-    var cuotas=_pagos.filter(function(p){return p.lot_id===lote.id;}).sort(function(a,b){return a.num_cuota-b.num_cuota;});
+    var cuotas=_pagos.filter(function(p){return p.lot_id===lote.id && p.num_cuota !== 0;}).sort(function(a,b){return a.num_cuota-b.num_cuota;});
     var pagadas=cuotas.filter(function(p){return p.pagado;}).length;
     var totalC=cuotas.length||lote.mo||0;
     var pct=totalC>0?Math.round(pagadas/totalC*100):0;
