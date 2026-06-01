@@ -1407,9 +1407,11 @@ function _abrirModalEvento(e, fechaPresel) {
       var titulo = '💳 Araguatos — Cuota vence ' + cuando;
       var cuerpo = comprador + ' · Cuota #' + p.num_cuota + ' · ' + fmtMonto(p.monto);
 
-      new Notification(titulo, { body: cuerpo, icon: 'logo.png' });
-      tgEnviar(titulo + '\n' + cuerpo + '\nVence: ' + fmtFecha(p.fecha_vence));
-      sbUpdate('pagos', p.id, { notificado: true });
+      p.notificado = true; // bloquear en memoria inmediatamente
+      sbUpdate('pagos', p.id, { notificado: true }).then(function() {
+        new Notification(titulo, { body: cuerpo, icon: 'logo.png' });
+        tgEnviar(titulo + '\n' + cuerpo + '\nVence: ' + fmtFecha(p.fecha_vence));
+      });
     }
 
     if (dVence < 0) {
@@ -1424,9 +1426,11 @@ function _abrirModalEvento(e, fechaPresel) {
       var cuerpo2 = comprador2 + ' · Cuota #' + p.num_cuota +
                     ' · Vencida hace ' + Math.abs(dVence) + ' día(s) · ' + fmtMonto(p.monto);
 
-      new Notification(titulo2, { body: cuerpo2, icon: 'logo.png' });
-      tgEnviar(titulo2 + '\n' + cuerpo2);
-      sbUpdate('pagos', p.id, { notificado: true });
+      p.notificado = true; // bloquear en memoria inmediatamente
+      sbUpdate('pagos', p.id, { notificado: true }).then(function() {
+        new Notification(titulo2, { body: cuerpo2, icon: 'logo.png' });
+        tgEnviar(titulo2 + '\n' + cuerpo2);
+      });
     }
   });
 
@@ -1453,9 +1457,11 @@ function _abrirModalEvento(e, fechaPresel) {
       var cuerpo = (p.telefono ? '📞 ' + p.telefono : '') + vendNombre +
                    (p.notas ? '\n' + p.notas : '');
 
-      new Notification(titulo, { body: cuerpo || p.nombre, icon: 'logo.png' });
-      tgEnviar(titulo + (cuerpo ? '\n' + cuerpo : ''));
-      sbUpdate('prospectos', p.id, { notificado: true });
+      p.notificado = true; // bloquear en memoria inmediatamente
+      sbUpdate('prospectos', p.id, { notificado: true }).then(function() {
+        new Notification(titulo, { body: cuerpo || p.nombre, icon: 'logo.png' });
+        tgEnviar(titulo + (cuerpo ? '\n' + cuerpo : ''));
+      });
     }
   });
 }
