@@ -216,13 +216,14 @@
       <div class="psm" id="cashSum"></div>
     </div>
     <div id="finSec">
-      <div class="ct">Plazo (36–54 meses)</div>
-      <div class="rbtns">
-        <button class="rb on" onclick="sPlazo(36,this)">36m</button>
-        <button class="rb"    onclick="sPlazo(42,this)">42m</button>
-        <button class="rb"    onclick="sPlazo(48,this)">48m</button>
-        <button class="rb"    onclick="sPlazo(54,this)">54m</button>
-      </div>
+      <div class="ct">Plazo (36–60 meses)</div>
+<div class="rbtns">
+  <button class="rb on" onclick="sPlazo(36,this)">36m</button>
+  <button class="rb"    onclick="sPlazo(42,this)">42m</button>
+  <button class="rb"    onclick="sPlazo(48,this)">48m</button>
+  <button class="rb"    onclick="sPlazo(54,this)">54m</button>
+  <button class="rb"    onclick="sPlazo(60,this)">60m</button>
+</div>
       <div class="pay-grid">
         <div class="pay-field">
           <label>💵 Cuota inicial ($ pesos)</label>
@@ -232,7 +233,7 @@
         <div class="pay-field">
           <label>📆 Cuota mensual ($ pesos)</label>
           <input type="text" id="cm_manual" inputmode="numeric" placeholder="Ej: 1.500.000" oninput="onCmManual()">
-          <div class="hint">El plazo se calcula automáticamente. Máx 54 meses.</div>
+          <div class="hint">El plazo se calcula automáticamente. Máx 60 meses.</div>
         </div>
       </div>
       <div id="finAlert"></div>
