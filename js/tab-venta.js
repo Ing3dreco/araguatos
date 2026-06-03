@@ -3,7 +3,7 @@
    Listado interactivo de lotes + simulador de pago
 ═══════════════════════════════════════════════════ */
 
-var MAX_MO = 54;
+var MAX_MO = 60;
 
 /* ── Helpers de pago ────────────────────────────── */
 function pvOk() { return pvUsed() < 10; }
