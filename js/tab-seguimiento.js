@@ -483,10 +483,21 @@ function _renderAgenda(c) {
 
     c.innerHTML =
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
-      '<select id="segFiltroAgendaVend" onchange="window._segCambiarVendedorAgenda(this.value)" ' +
-      'style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;background:#fff">' +
-      optsAgenda + '</select>' +
-      '<div style="font-size:13px;font-weight:700;color:#1a237e">Agenda' + vendAgendaNombre + '</div>' +
+'<select id="segFiltroAgendaVend" onchange="window._segCambiarVendedorAgenda(this.value)" ' +
+'style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;background:#fff">' +
+optsAgenda + '</select>' +
+'<div style="position:relative;flex:1;max-width:280px">' +
+'<span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:14px;pointer-events:none">🔍</span>' +
+'<input id="segBusquedaAgenda" type="text" placeholder="Buscar por título, nombre o lote…" ' +
+'value="' + (_busquedaAgenda || '') + '" ' +
+'oninput="window._segBuscarAgenda(this.value)" ' +
+'style="width:100%;padding:8px 12px 8px 32px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;background:#fff;box-sizing:border-box">' +
+(_busquedaAgenda
+  ? '<button onclick="window._segBuscarAgenda(\'\');document.getElementById(\'segBusquedaAgenda\').value=\'\'" ' +
+    'style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:14px;color:#999;line-height:1">✕</button>'
+  : '') +
+'</div>' +
+'<div style="font-size:13px;font-weight:700;color:#1a237e">Agenda' + vendAgendaNombre + '</div>' +
       '</div>' +
       '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">' +
       _kpiBox('🔴 Vencidos', evVencidos.length, '#ffebee','#c62828') +
