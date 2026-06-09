@@ -36,7 +36,6 @@ function tgEnviar(mensaje) {
   var _vendedores     = [];
   var _vendedorActivo  = null;
   var _vendedorAgenda  = null;
-  var _busquedaAgenda  = '';
   var _vistaActiva    = 'agenda';
   var _mesActual      = new Date();
   var _diaSeleccionado = null;
@@ -446,28 +445,15 @@ function tgEnviar(mensaje) {
   /* ══════════════════════════════════════════════════════════
      VISTA 1 — AGENDA
   ══════════════════════════════════════════════════════════ */
-function _renderAgenda(c) {
-  var hoyIso = hoy();
+  function _renderAgenda(c) {
+    var hoyIso = hoy();
+    var evsFiltrados = _vendedorAgenda
+      ? _eventos.filter(function(e){ return e.vendedor_id === _vendedorAgenda; })
+      : _eventos;
 
-  // Filtro por vendedor
-  var evsFiltrados = _vendedorAgenda
-    ? _eventos.filter(function(e){ return e.vendedor_id === _vendedorAgenda; })
-    : _eventos;
-
-  // Filtro por búsqueda (título, relacionado, descripción o nombre de vendedor)
-  if (_busquedaAgenda) {
-   var q = _busquedaAgenda;
-    evsFiltrados = evsFiltrados.filter(function(e) {
-   var vend = _vendedores.find(function(v){ return v.id === e.vendedor_id; });
-      return (e.titulo       || '').toLowerCase().includes(q) ||
-             (e.relacionado  || '').toLowerCase().includes(q) ||
-             (e.descripcion  || '').toLowerCase().includes(q) ||
-             (vend ? vend.nombre.toLowerCase().includes(q) : false);
-    });
-  }
-  var evHoy      = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===hoyIso && !e.completado; });
-  var evProx     = evsFiltrados.filter(function(e){ var d=diffDias(isoFecha(e.fecha)); return d>=0&&d<=7&&!e.completado; });
-  var evVencidos = evsFiltrados.filter(function(e){ return diffDias(isoFecha(e.fecha))<0&&!e.completado; });
+    var evHoy      = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===hoyIso && !e.completado; });
+    var evProx     = evsFiltrados.filter(function(e){ var d=diffDias(isoFecha(e.fecha)); return d>=0&&d<=7&&!e.completado; });
+    var evVencidos = evsFiltrados.filter(function(e){ return diffDias(isoFecha(e.fecha))<0&&!e.completado; });
 
     var panelLateral = _diaSeleccionado ? _panelDia(_diaSeleccionado, evsFiltrados) : _panelProximos(evsFiltrados);
 
@@ -483,28 +469,19 @@ function _renderAgenda(c) {
 
     c.innerHTML =
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
-'<select id="segFiltroAgendaVend" onchange="window._segCambiarVendedorAgenda(this.value)" ' +
-'style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;background:#fff">' +
-optsAgenda + '</select>' +
-'<div style="position:relative;flex:1;max-width:280px">' +
-'<span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:14px;pointer-events:none">🔍</span>' +
-'<input id="segBusquedaAgenda" type="text" placeholder="Buscar por título, nombre o lote…" ' +
-'value="' + (_busquedaAgenda || '') + '" ' +
-'oninput="window._segBuscarAgenda(this.value)" ' +
-'style="width:100%;padding:8px 12px 8px 32px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;background:#fff;box-sizing:border-box">' +
-'<button id="segBusquedaLimpiar" ' +
-'style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:14px;color:#999;line-height:1;display:' + (_busquedaAgenda ? 'block' : 'none') + '">✕</button>' +
-'</div>' +
-'<div style="font-size:13px;font-weight:700;color:#1a237e">Agenda' + vendAgendaNombre + '</div>' +
+      '<select id="segFiltroAgendaVend" onchange="window._segCambiarVendedorAgenda(this.value)" ' +
+      'style="padding:8px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;background:#fff">' +
+      optsAgenda + '</select>' +
+      '<div style="font-size:13px;font-weight:700;color:#1a237e">Agenda' + vendAgendaNombre + '</div>' +
       '</div>' +
-      '<div id="segAgendaKpis" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">' +
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">' +
       _kpiBox('🔴 Vencidos', evVencidos.length, '#ffebee','#c62828') +
       _kpiBox('🟡 Hoy',      evHoy.length,      '#fff3e0','#e65100') +
       _kpiBox('🔵 Próx. 7d', evProx.length,     '#e3f2fd','#1565c0') +
       '</div>' +
       '<div style="display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start">' +
-      '<div id="segAgendaCalendario" class="card" style="padding:16px">'+_buildCalendario(evsFiltrados)+'</div>' +
-      '<div id="segAgendaPanelLateral">'+panelLateral+'</div>' +
+      '<div class="card" style="padding:16px">'+_buildCalendario(evsFiltrados)+'</div>' +
+      '<div>'+panelLateral+'</div>' +
       '</div>';
 
     var prev = document.getElementById('calPrev');
@@ -515,15 +492,6 @@ optsAgenda + '</select>' +
     c.querySelectorAll('[data-caldia]').forEach(function(cel) {
       cel.addEventListener('click', function() { _diaSeleccionado=this.dataset.caldia; _renderVista(); });
     });
-   var btnLimpiar = document.getElementById('segBusquedaLimpiar');
-if (btnLimpiar) {
-  btnLimpiar.onclick = function() {
-    _busquedaAgenda = '';
-    var inp = document.getElementById('segBusquedaAgenda');
-    if (inp) inp.value = '';
-    _renderAgendaResultados();
-  };
-}
     _pedirPermisoNotificacion();
   }
 
@@ -1601,69 +1569,6 @@ if (btnLimpiar) {
   /* ══════════════════════════════════════════════════════════
      ENTRADA PÚBLICA
   ══════════════════════════════════════════════════════════ */
-  window._segBuscarAgenda = function(val) {
-  _busquedaAgenda = (val || '').toLowerCase().trim();
-  // Solo re-renderiza el contenido, NO el panel completo
-  // para no destruir el foco del input
-  _renderAgendaResultados();
-};
-   function _renderAgendaResultados() {
-  // Actualiza solo el contador de KPIs y el panel lateral/calendario
-  // sin tocar el input de búsqueda
-  var hoyIso = hoy();
-  var evsFiltrados = _vendedorAgenda
-    ? _eventos.filter(function(e){ return e.vendedor_id === _vendedorAgenda; })
-    : _eventos;
-
-  if (_busquedaAgenda) {
-    var q = _busquedaAgenda;
-    evsFiltrados = evsFiltrados.filter(function(e) {
-      var vend = _vendedores.find(function(v){ return v.id === e.vendedor_id; });
-      return (e.titulo      || '').toLowerCase().includes(q) ||
-             (e.relacionado || '').toLowerCase().includes(q) ||
-             (e.descripcion || '').toLowerCase().includes(q) ||
-             (vend ? vend.nombre.toLowerCase().includes(q) : false);
-    });
-  }
-
-  // Actualizar KPIs
-  var evHoy      = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===hoyIso && !e.completado; });
-  var evProx     = evsFiltrados.filter(function(e){ var d=diffDias(isoFecha(e.fecha)); return d>=0&&d<=7&&!e.completado; });
-  var evVencidos = evsFiltrados.filter(function(e){ return diffDias(isoFecha(e.fecha))<0&&!e.completado; });
-
-  var kpiEl = document.getElementById('segAgendaKpis');
-  if (kpiEl) {
-    kpiEl.innerHTML =
-      _kpiBox('🔴 Vencidos', evVencidos.length, '#ffebee','#c62828') +
-      _kpiBox('🟡 Hoy',      evHoy.length,      '#fff3e0','#e65100') +
-      _kpiBox('🔵 Próx. 7d', evProx.length,     '#e3f2fd','#1565c0');
-  }
-
-  // Actualizar panel lateral
-  var panelEl = document.getElementById('segAgendaPanelLateral');
-  if (panelEl) {
-    panelEl.innerHTML = _diaSeleccionado
-      ? _panelDia(_diaSeleccionado, evsFiltrados)
-      : _panelProximos(evsFiltrados);
-  }
-
-  // Actualizar calendario
-  var calEl = document.getElementById('segAgendaCalendario');
-  if (calEl) {
-    calEl.innerHTML = _buildCalendario(evsFiltrados);
-    var prev = document.getElementById('calPrev');
-    var next = document.getElementById('calNext');
-    if (prev) prev.onclick = function() { _mesActual=new Date(_mesActual.getFullYear(),_mesActual.getMonth()-1,1); _renderVista(); };
-    if (next) next.onclick = function() { _mesActual=new Date(_mesActual.getFullYear(),_mesActual.getMonth()+1,1); _renderVista(); };
-    calEl.querySelectorAll('[data-caldia]').forEach(function(cel) {
-      cel.addEventListener('click', function() { _diaSeleccionado=this.dataset.caldia; _renderAgendaResultados(); });
-    });
-  }
-
-  // Actualizar botón limpiar búsqueda
-  var limpiarEl = document.getElementById('segBusquedaLimpiar');
-  if (limpiarEl) limpiarEl.style.display = _busquedaAgenda ? 'block' : 'none';
-}
   window.initSeguimiento = function(){
     _renderPanel();
     cargarTodo();
