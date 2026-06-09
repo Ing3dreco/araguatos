@@ -1,15 +1,14 @@
 /* ═══════════════════════════════════════════════════════════════
-   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v5
-   Cambios v5:
-     PANEL DÍA  : Al hacer clic en un día del calendario, ahora
-                  también se muestran las cuotas de pagos que
-                  vencen ese día (además de los eventos). Así los
-                  puntos azules/rojos/naranja siempre corresponden
-                  a algo visible al hacer clic.
-     BUSCADOR   : Nuevo buscador de eventos por título. Busca en
-                  la tabla `eventos` de Supabase. La búsqueda es
-                  case-sensitive (distingue mayúsculas/minúsculas).
-                  Aparece encima del calendario en la vista Agenda.
+   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v6
+   Cambios v6:
+     PAGOS FIX  : Corregida la generación de cuotas cuando el lote
+                  tiene datos incompletos (cmAmt / saldo 0). Ahora
+                  se recalcula correctamente desde salePrice, dn y mo.
+     PAGOS UX   : La sección de cada lote/cliente ahora funciona como
+                  acordeón desplegable (colapsado por defecto).
+                  Buscador de clientes/lotes en la parte superior.
+                  Botón "Ver detalle / Editar venta" en la cabecera de
+                  cada acordeón que abre el modal de edición del lote.
    ═══════════════════════════════════════════════════════════════ */
 (function () {
 var TG_CHAT_ID = '-5030514648';
@@ -42,9 +41,13 @@ function tgEnviar(mensaje) {
   var _realtimeSubs   = [];
   var _notifVistas    = {};
 
-  /* ── NUEVO v5: estado del buscador ───────────────────────── */
-  var _busquedaEvento  = '';        // texto actual del buscador
-  var _resultadosBusq  = null;      // null = no buscando, [] = sin resultados
+  /* ── v5: estado del buscador de eventos ──────────────────── */
+  var _busquedaEvento  = '';
+  var _resultadosBusq  = null;
+
+  /* ── v6: estado UI de Pagos ──────────────────────────────── */
+  var _busquedaPagos   = '';          // texto buscador de pagos
+  var _acordeonesAbiertos = {};       // { loteId: true/false }
 
   /* ── Helpers de fecha ─────────────────────────────────────── */
   var MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
@@ -181,16 +184,39 @@ function tgEnviar(mensaje) {
     });
   }
 
-  /* ── Cuotas automáticas ───────────────────────────────────── */
+  /* ══════════════════════════════════════════════════════════
+     CUOTAS AUTOMÁTICAS — v6 FIX
+     Se corrige el cálculo cuando cmAmt es 0 o falta:
+     siempre recalcula desde salePrice, dn% y mo.
+  ══════════════════════════════════════════════════════════ */
   function generarCuotasDeLote(lote) {
-    if (lote.payType === 'cash' || !lote.mo || lote.mo <= 0) return [];
-    var precio   = Number(lote.salePrice) || 0;
-    var dn       = Number(lote.dnAmt) || precio * (lote.dn || 20) / 100;
-    var saldo    = Math.max(0, precio - dn);
-    var cuotaMes = Number(lote.cmAmt) || (saldo / lote.mo);
-    var base     = lote.saleDate ? new Date(lote.saleDate + 'T12:00:00') : new Date();
-    var cuotas   = [];
-    for (var i = 1; i <= lote.mo; i++) {
+    if (lote.payType === 'cash') return [];
+    var mo = parseInt(lote.mo) || 0;
+    if (mo <= 0) return [];
+
+    var precio = Number(lote.salePrice) || 0;
+    if (precio <= 0) return [];                     // sin precio, nada que generar
+
+    /* Cuota inicial: si dnAmt está definido y > 0 se usa, si no se calcula */
+    var dnPct = Number(lote.dn) || 20;              // porcentaje de enganche
+    var dn    = Number(lote.dnAmt) > 0
+                  ? Number(lote.dnAmt)
+                  : precio * dnPct / 100;
+
+    var saldo = Math.max(0, precio - dn);
+
+    /* Cuota mensual: si cmAmt > 0 se usa, si no se calcula */
+    var cuotaMes = Number(lote.cmAmt) > 0
+                     ? Number(lote.cmAmt)
+                     : (saldo / mo);
+
+    if (cuotaMes <= 0) return [];                   // v6 fix: evita generar cuotas en $0
+
+    var base = lote.saleDate
+                 ? new Date(lote.saleDate + 'T12:00:00')
+                 : new Date();
+    var cuotas = [];
+    for (var i = 1; i <= mo; i++) {
       var f = new Date(base.getFullYear(), base.getMonth() + i, base.getDate());
       cuotas.push({
         lot_id: lote.id, num_cuota: i,
@@ -200,13 +226,42 @@ function tgEnviar(mensaje) {
     }
     return cuotas;
   }
+
   function sincronizarCuotas(lote) {
-    var existentes = _pagos.filter(function(p){ return p.lot_id === lote.id; });
-    if (existentes.length > 0) return Promise.resolve();
+    var existentes = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota > 0; });
+
+    /* v6 fix: si existen pero todas tienen monto 0 → borrar y regenerar */
+    var todasCero = existentes.length > 0 && existentes.every(function(p){
+      return Number(p.monto) === 0;
+    });
+    /* v6 fix: si el número de cuotas existentes no coincide con lote.mo → regenerar */
+    var cantidadIncorrecta = existentes.length > 0 && parseInt(lote.mo) > 0 &&
+                             existentes.length !== parseInt(lote.mo);
+
+    if (existentes.length > 0 && !todasCero && !cantidadIncorrecta) {
+      return Promise.resolve();
+    }
+
     var cuotas = generarCuotasDeLote(lote);
     if (!cuotas.length) return Promise.resolve();
-    return sbInsert('pagos', cuotas).then(function(nuevas) {
+
+    /* Si hay cuotas malas, eliminarlas primero */
+    var promesaBorrado = Promise.resolve();
+    if (existentes.length > 0) {
+      promesaBorrado = Promise.all(existentes.map(function(p){
+        return sbDelete('pagos', p.id);
+      })).then(function(){
+        _pagos = _pagos.filter(function(p){
+          return !(p.lot_id === lote.id && p.num_cuota > 0);
+        });
+      });
+    }
+
+    return promesaBorrado.then(function(){
+      return sbInsert('pagos', cuotas);
+    }).then(function(nuevas) {
       _pagos = _pagos.concat(nuevas || []);
+      _renderVista();
     }).catch(function(e){ console.error('[Seguimiento] Error cuotas', lote.id, e); });
   }
 
@@ -449,7 +504,6 @@ function tgEnviar(mensaje) {
       vendAgendaNombre = va ? ' — 👤 ' + va.nombre : '';
     }
 
-    /* ── NUEVO v5: render del buscador ── */
     var busqVal = _busquedaEvento || '';
     var busqHTML =
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;' +
@@ -466,7 +520,6 @@ function tgEnviar(mensaje) {
         : '') +
       '</div>';
 
-    /* ── Si hay búsqueda activa, mostrar resultados en lugar del calendario ── */
     var cuerpoAgenda;
     if (_resultadosBusq !== null) {
       cuerpoAgenda = _renderResultadosBusqueda(_resultadosBusq, busqVal);
@@ -493,7 +546,6 @@ function tgEnviar(mensaje) {
       busqHTML +
       cuerpoAgenda;
 
-    /* eventos del DOM */
     var prev = document.getElementById('calPrev');
     var next = document.getElementById('calNext');
     if (prev) prev.onclick = function() { _mesActual=new Date(_mesActual.getFullYear(),_mesActual.getMonth()-1,1); _renderVista(); };
@@ -503,7 +555,6 @@ function tgEnviar(mensaje) {
       cel.addEventListener('click', function() { _diaSeleccionado=this.dataset.caldia; _renderVista(); });
     });
 
-    /* Foco automático al input de búsqueda si había texto */
     if (busqVal) {
       var inp = document.getElementById('segBusqEvento');
       if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
@@ -512,7 +563,6 @@ function tgEnviar(mensaje) {
     _pedirPermisoNotificacion();
   }
 
-  /* ── NUEVO v5: helper escape HTML básico ─────────────────── */
   function _escapeHtml(str) {
     return String(str || '')
       .replace(/&/g,'&amp;')
@@ -521,7 +571,6 @@ function tgEnviar(mensaje) {
       .replace(/"/g,'&quot;');
   }
 
-  /* ── NUEVO v5: lógica de búsqueda (case-sensitive) ────────── */
   window._segBuscarEvento = function(valor) {
     _busquedaEvento = valor;
     if (!valor || valor.trim() === '') {
@@ -529,7 +578,6 @@ function tgEnviar(mensaje) {
       _renderVista();
       return;
     }
-    /* Búsqueda local en _eventos — case-sensitive con indexOf */
     var termino = valor.trim();
     var resultados = _eventos.filter(function(e) {
       return (e.titulo || '').indexOf(termino) !== -1;
@@ -544,7 +592,6 @@ function tgEnviar(mensaje) {
     _renderVista();
   };
 
-  /* ── NUEVO v5: render de resultados de búsqueda ─────────── */
   function _renderResultadosBusqueda(resultados, termino) {
     var encabezado =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
@@ -569,7 +616,6 @@ function tgEnviar(mensaje) {
       '</div>';
   }
 
-  /* ── NUEVO v5: card de evento en resultados (resalta coincidencia) */
   function _cardEventoBusqueda(e, termino) {
     var tipos = {
       reunion:      { icono:'🤝', color:'#1565c0', bg:'#e3f2fd' },
@@ -582,10 +628,7 @@ function tgEnviar(mensaje) {
     var d = diffDias(isoFecha(e.fecha));
     var dLabel = d===0?'Hoy':d===1?'Mañana':d<0?'Hace '+Math.abs(d)+'d':'En '+d+'d';
     var hora = fmtHora(e.fecha);
-
-    /* Resaltar el término en el título (case-sensitive) */
     var tituloResaltado = _resaltarTermino(e.titulo || '', termino);
-
     var vend = _vendedores.find(function(v){ return v.id===e.vendedor_id; });
 
     return '<div style="display:flex;gap:10px;align-items:flex-start;padding:10px;border-radius:9px;margin-bottom:8px;' +
@@ -607,10 +650,8 @@ function tgEnviar(mensaje) {
       '</div></div>';
   }
 
-  /* ── NUEVO v5: resaltar término en texto (case-sensitive) ── */
   function _resaltarTermino(texto, termino) {
     if (!termino) return _escapeHtml(texto);
-    /* Dividir por ocurrencias (case-sensitive) */
     var resultado = '';
     var idx = 0;
     var pos;
@@ -623,18 +664,13 @@ function tgEnviar(mensaje) {
     return resultado;
   }
 
-  /* ══════════════════════════════════════════════════════════
-     PANEL DÍA — OPCIÓN B: incluye cuotas del día
-  ══════════════════════════════════════════════════════════ */
+  /* ── Panel día (v5: incluye cuotas del día) ─────────────── */
   function _panelDia(isoD, evsFiltrados) {
     evsFiltrados = evsFiltrados || _eventos;
-
-    /* Eventos del día */
     var evsDia = evsFiltrados
       .filter(function(e){ return isoFecha(e.fecha) === isoD; })
       .sort(function(a,b){ return (a.fecha||'') > (b.fecha||'') ? 1 : -1; });
 
-    /* ── NUEVO v5: cuotas que vencen ese día ─────────────── */
     var cuotasDia = _pagos.filter(function(p){
       return p.fecha_vence && isoFecha(p.fecha_vence) === isoD;
     });
@@ -673,7 +709,6 @@ function tgEnviar(mensaje) {
       '<button class="btn bg bsm" onclick="window._segNuevoEvento(\''+isoD+'\')">+ Evento</button>' +
       '<button onclick="window._segCerrarDia()" style="background:none;border:none;cursor:pointer;font-size:18px;color:#888;line-height:1">✕</button>' +
       '</div></div>' +
-      /* Sección de eventos del día */
       (evsDia.length === 0 && cuotasDia.length === 0
         ? '<div style="font-size:12px;color:#999;text-align:center;padding:20px 0">Sin eventos ni cuotas para este día</div>'
         : '') +
@@ -714,8 +749,6 @@ function tgEnviar(mensaje) {
         evMes[d].push(e);
       }
     });
-
-    /* ── OPCIÓN B: también incluir cuotas en el mapa del calendario ── */
     _pagos.filter(function(p){
       return !p.pagado && p.fecha_vence &&
              p.fecha_vence.slice(0,7) === (anio+'-'+_pad(mes+1));
@@ -791,12 +824,12 @@ function tgEnviar(mensaje) {
   }
 
   /* ══════════════════════════════════════════════════════════
-     VISTA 2 — PAGOS
+     VISTA 2 — PAGOS  (v6: acordeón + buscador + editar venta)
   ══════════════════════════════════════════════════════════ */
   function _renderPagos(c) {
-    var lotesVendidos=(window.S&&window.S.lots
-      ?window.S.lots.filter(function(l){ return (l.status==='sold'||l.status==='apartado')&&l.payType!=='cash'; })
-      :[]);
+    var lotesVendidos = (window.S && window.S.lots
+      ? window.S.lots.filter(function(l){ return (l.status==='sold'||l.status==='apartado') && l.payType!=='cash'; })
+      : []);
 
     var totalRecaudado = _pagos.reduce(function(s,p){
       if (p.pagado) return s + Number(p.monto);
@@ -807,33 +840,205 @@ function tgEnviar(mensaje) {
       var abonado = Number(p.abonado) || 0;
       return s + Math.max(0, Number(p.monto) - abonado);
     }, 0);
-    var enMora=_pagos.filter(function(p){return !p.pagado&&diffDias(p.fecha_vence)<0;}).length;
+    var enMora = _pagos.filter(function(p){ return !p.pagado && diffDias(p.fecha_vence) < 0; }).length;
 
-    c.innerHTML=
+    /* ── Filtrar lotes según buscador ── */
+    var busq = (_busquedaPagos || '').toLowerCase().trim();
+    var lotesFiltrados = busq
+      ? lotesVendidos.filter(function(l){
+          return (String(l.id||'').toLowerCase().indexOf(busq) !== -1) ||
+                 (String(l.buyer||'').toLowerCase().indexOf(busq) !== -1) ||
+                 (String(l.cc||'').toLowerCase().indexOf(busq) !== -1) ||
+                 (String(l.phone||'').toLowerCase().indexOf(busq) !== -1);
+        })
+      : lotesVendidos;
+
+    /* ── HTML del buscador ── */
+    var busqPagosHTML =
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;' +
+      'background:#fff;border:1.5px solid #ddd;border-radius:10px;padding:7px 13px;' +
+      'box-shadow:0 1px 4px rgba(0,0,0,.06)">' +
+      '<span style="font-size:15px;color:#888">🔍</span>' +
+      '<input id="segBusqPagos" type="text" value="'+_escapeHtml(_busquedaPagos)+'" ' +
+      'placeholder="Buscar por lote, comprador, C.C. o teléfono…" ' +
+      'style="flex:1;border:none;outline:none;font-size:13px;background:transparent;color:#333" ' +
+      'oninput="window._segBuscarPagos(this.value)">' +
+      (_busquedaPagos
+        ? '<button onclick="window._segLimpiarBusqPagos()" title="Limpiar" ' +
+          'style="background:none;border:none;cursor:pointer;font-size:16px;color:#888;line-height:1;padding:0 2px">✕</button>'
+        : '') +
+      (busq && lotesFiltrados.length > 0
+        ? '<span style="font-size:11px;color:#1565c0;font-weight:700;white-space:nowrap">'+lotesFiltrados.length+' resultado'+(lotesFiltrados.length>1?'s':'')+'</span>'
+        : '') +
+      '</div>';
+
+    c.innerHTML =
       '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">' +
-      _kpiBox('✅ Recaudado',fmtMonto(totalRecaudado),'#e8f5e9','#2e7d32') +
-      _kpiBox('⏳ Pendiente',fmtMonto(totalPendiente),'#e3f2fd','#1565c0') +
-      _kpiBox('🔴 En mora',enMora+' cuotas','#ffebee','#c62828') +
+      _kpiBox('✅ Recaudado', fmtMonto(totalRecaudado), '#e8f5e9','#2e7d32') +
+      _kpiBox('⏳ Pendiente', fmtMonto(totalPendiente), '#e3f2fd','#1565c0') +
+      _kpiBox('🔴 En mora',   enMora+' cuotas',         '#ffebee','#c62828') +
       '</div>' +
-      (lotesVendidos.length===0
-        ?'<div class="al al-i">No hay ventas financiadas registradas.</div>'
-        :lotesVendidos.map(function(l){return _seccionLote(l);}).join('')
+      busqPagosHTML +
+      (lotesFiltrados.length === 0
+        ? '<div class="al al-i" style="text-align:center;padding:32px;color:#999;font-size:13px">' +
+          (busq ? '🔍 Sin resultados para "'+_escapeHtml(_busquedaPagos)+'"' : 'No hay ventas financiadas registradas.') +
+          '</div>'
+        : lotesFiltrados.map(function(l){ return _acordeonLote(l); }).join('')
       );
-    lotesVendidos.forEach(function(l){sincronizarCuotas(l);});
+
+    /* Sincronizar cuotas de todos los lotes */
+    lotesVendidos.forEach(function(l){ sincronizarCuotas(l); });
+
+    /* Foco al buscador si tenía texto */
+    if (_busquedaPagos) {
+      var inp = document.getElementById('segBusqPagos');
+      if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+    }
   }
 
-  function _seccionLote(lote) {
-    var cuotas=_pagos.filter(function(p){return p.lot_id===lote.id && p.num_cuota !== 0;}).sort(function(a,b){return a.num_cuota-b.num_cuota;});
-    var pagadas=cuotas.filter(function(p){return p.pagado;}).length;
-    var totalC=cuotas.length||lote.mo||0;
-    var pct=totalC>0?Math.round(pagadas/totalC*100):0;
+  /* ── Handlers buscador de pagos ──────────────────────────── */
+  window._segBuscarPagos = function(valor) {
+    _busquedaPagos = valor;
+    _renderVista();
+  };
+  window._segLimpiarBusqPagos = function() {
+    _busquedaPagos = '';
+    _renderVista();
+  };
+
+  /* ── Acordeón por lote ─────────────────────────────────────
+     v6: cada lote se muestra colapsado por defecto.
+     El encabezado tiene: toggle ▶/▼, nombre, KPIs rápidos,
+     botón "✏️ Editar venta" y botón expandir.
+  ─────────────────────────────────────────────────────────── */
+  function _acordeonLote(lote) {
+    var abierto = !!_acordeonesAbiertos[lote.id];
+    var cuotas  = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota !== 0; })
+                        .sort(function(a,b){ return a.num_cuota - b.num_cuota; });
+    var pagadas  = cuotas.filter(function(p){ return p.pagado; }).length;
+    var totalC   = cuotas.length || parseInt(lote.mo) || 0;
+    var pct      = totalC > 0 ? Math.round(pagadas / totalC * 100) : 0;
 
     var precio  = Number(lote.salePrice) || 0;
-    var dnAmt   = Number(lote.dnAmt)     || precio * (lote.dn || 20) / 100;
+    var dnPct   = Number(lote.dn) || 20;
+    var dnAmt   = Number(lote.dnAmt) > 0 ? Number(lote.dnAmt) : precio * dnPct / 100;
     var ciRow   = _pagos.find(function(p){ return p.lot_id === lote.id && p.num_cuota === 0; });
-    var dnPagado= ciRow ? ciRow.pagado     : (lote.dnPagado || false);
-    var dnFecha = ciRow ? ciRow.fecha_pago : (lote.dnFecha  || lote.saleDate || null);
-    var dnNota  = ciRow ? ciRow.nota       : (lote.dnNota   || '');
+    var dnPagado = ciRow ? ciRow.pagado : (lote.dnPagado || false);
+
+    /* Semáforo global del lote */
+    var enMoraLote   = cuotas.filter(function(p){ return !p.pagado && diffDias(p.fecha_vence) < 0; }).length;
+    var proxVenceLote = cuotas.filter(function(p){ return !p.pagado && diffDias(p.fecha_vence) >= 0 && diffDias(p.fecha_vence) <= 7; }).length;
+    var colorLote = enMoraLote > 0 ? '#c62828' : proxVenceLote > 0 ? '#e65100' : pct >= 100 ? '#2e7d32' : '#1565c0';
+    var bgLote    = enMoraLote > 0 ? '#ffebee' : proxVenceLote > 0 ? '#fff3e0' : pct >= 100 ? '#e8f5e9' : '#e3f2fd';
+    var iconoLote = enMoraLote > 0 ? '🔴' : proxVenceLote > 0 ? '🟡' : pct >= 100 ? '✅' : '🔵';
+
+    var cuerpo = abierto ? _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct) : '';
+
+    return '<div class="card" style="margin-bottom:10px;overflow:hidden" id="acord-'+lote.id+'">' +
+      /* ── Cabecera del acordeón ── */
+      '<div onclick="window._segToggleAcordeon(\''+lote.id+'\')" ' +
+      'style="display:flex;align-items:center;gap:10px;padding:14px 16px;cursor:pointer;' +
+      'background:'+(abierto?'#f8f9ff':'#fff')+';' +
+      'border-bottom:'+(abierto?'1px solid #e8eaf6':'none')+';' +
+      'transition:background .15s;user-select:none" ' +
+      'onmouseover="this.style.background=\'#f0f4ff\'" ' +
+      'onmouseout="this.style.background=\''+(abierto?'#f8f9ff':'#fff')+'\'">' +
+
+      /* Flecha */
+      '<div style="font-size:14px;color:#1565c0;transition:transform .2s;transform:'+(abierto?'rotate(90deg)':'rotate(0deg)')+'">' +
+      '▶</div>' +
+
+      /* Ícono semáforo */
+      '<div style="font-size:18px;flex-shrink:0">'+iconoLote+'</div>' +
+
+      /* Nombre y datos */
+      '<div style="flex:1;min-width:0">' +
+      '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">' +
+      '<span style="font-size:14px;font-weight:800;color:#1a237e">Lote '+_escapeHtml(String(lote.id))+'</span>' +
+      '<span style="font-size:13px;font-weight:700;color:#333">'+_escapeHtml(lote.buyer||'—')+'</span>' +
+      (lote.cc ? '<span style="font-size:11px;color:#888">C.C. '+_escapeHtml(lote.cc)+'</span>' : '') +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">' +
+      '<div style="height:5px;width:100px;background:#e0e0e0;border-radius:3px;flex-shrink:0">' +
+      '<div style="height:5px;background:'+colorLote+';border-radius:3px;width:'+pct+'%"></div></div>' +
+      '<span style="font-size:11px;color:'+colorLote+';font-weight:700">'+pagadas+'/'+totalC+' cuotas · '+pct+'%</span>' +
+      (enMoraLote > 0 ? '<span style="font-size:10px;background:#ffebee;color:#c62828;padding:2px 7px;border-radius:10px;font-weight:700">'+enMoraLote+' en mora</span>' : '') +
+      (proxVenceLote > 0 ? '<span style="font-size:10px;background:#fff3e0;color:#e65100;padding:2px 7px;border-radius:10px;font-weight:700">'+proxVenceLote+' vencen pronto</span>' : '') +
+      '</div>' +
+      '</div>' +
+
+      /* Botones de la cabecera (no propagan el toggle) */
+      '<div style="display:flex;gap:6px;flex-shrink:0" onclick="event.stopPropagation()">' +
+      '<button onclick="window._segEditarVenta(\''+lote.id+'\')" title="Ver/Editar datos de la venta" ' +
+      'style="padding:5px 10px;border:1.5px solid #1565c0;border-radius:7px;background:#e3f2fd;' +
+      'color:#1565c0;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">✏️ Editar venta</button>' +
+      '</div>' +
+      '</div>' +
+
+      /* ── Cuerpo colapsable ── */
+      '<div id="acord-body-'+lote.id+'" style="display:'+(abierto?'block':'none')+'">' +
+      cuerpo +
+      '</div>' +
+      '</div>';
+  }
+
+  /* ── Toggle del acordeón ─────────────────────────────────── */
+  window._segToggleAcordeon = function(loteId) {
+    var estaAbierto = !!_acordeonesAbiertos[loteId];
+    _acordeonesAbiertos[loteId] = !estaAbierto;
+
+    /* Renderizado parcial sin repintar todo */
+    var body = document.getElementById('acord-body-' + loteId);
+    var card = document.getElementById('acord-' + loteId);
+    if (!body || !card) { _renderVista(); return; }
+
+    if (!estaAbierto) {
+      /* Abrir: inyectar contenido si está vacío */
+      if (!body.innerHTML.trim()) {
+        var lote = window.S && window.S.lots
+          ? window.S.lots.find(function(l){ return l.id === loteId; })
+          : null;
+        if (!lote) { _renderVista(); return; }
+        var cuotas  = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota !== 0; })
+                            .sort(function(a,b){ return a.num_cuota - b.num_cuota; });
+        var pagadas  = cuotas.filter(function(p){ return p.pagado; }).length;
+        var totalC   = cuotas.length || parseInt(lote.mo) || 0;
+        var pct      = totalC > 0 ? Math.round(pagadas / totalC * 100) : 0;
+        var precio   = Number(lote.salePrice) || 0;
+        var dnPct    = Number(lote.dn) || 20;
+        var dnAmt    = Number(lote.dnAmt) > 0 ? Number(lote.dnAmt) : precio * dnPct / 100;
+        var ciRow    = _pagos.find(function(p){ return p.lot_id === lote.id && p.num_cuota === 0; });
+        var dnPagado = ciRow ? ciRow.pagado : (lote.dnPagado || false);
+        body.innerHTML = _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct);
+      }
+      body.style.display = 'block';
+      /* Actualizar cabecera visualmente */
+      var cabFl = card.querySelector('div[onclick] > div:first-child');
+      if (cabFl) cabFl.style.transform = 'rotate(90deg)';
+      var cabBg = card.querySelector('div[onclick]');
+      if (cabBg) {
+        cabBg.style.background = '#f8f9ff';
+        cabBg.style.borderBottom = '1px solid #e8eaf6';
+        cabBg.setAttribute('onmouseout', "this.style.background='#f8f9ff'");
+      }
+    } else {
+      body.style.display = 'none';
+      var cabFl2 = card.querySelector('div[onclick] > div:first-child');
+      if (cabFl2) cabFl2.style.transform = 'rotate(0deg)';
+      var cabBg2 = card.querySelector('div[onclick]');
+      if (cabBg2) {
+        cabBg2.style.background = '#fff';
+        cabBg2.style.borderBottom = 'none';
+        cabBg2.setAttribute('onmouseout', "this.style.background='#fff'");
+      }
+    }
+  };
+
+  /* ── Cuerpo del lote (tabla de cuotas) ───────────────────── */
+  function _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct) {
+    var dnFecha = ciRow ? ciRow.fecha_pago : (lote.dnFecha || lote.saleDate || null);
+    var dnNota  = ciRow ? ciRow.nota       : (lote.dnNota  || '');
+    var precio  = Number(lote.salePrice) || 0;
 
     var sDn = dnPagado
       ? { color:'#2e7d32', bg:'#e8f5e9', icono:'✅', label:'Pagado' }
@@ -847,7 +1052,7 @@ function tgEnviar(mensaje) {
       '<td style="padding:7px 10px;text-align:center"><span style="background:'+sDn.bg+';color:'+sDn.color+';padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700">'+sDn.icono+' '+sDn.label+'</span></td>' +
       '<td style="padding:7px 10px;color:#888">' + (dnPagado && dnFecha ? fmtFecha(dnFecha) : '—') + '</td>' +
       '<td style="padding:7px 10px;color:#888;text-align:right">—</td>' +
-      '<td style="padding:7px 10px;color:#888;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (dnNota || '—') + '</td>' +
+      '<td style="padding:7px 10px;color:#888;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _escapeHtml(dnNota || '—') + '</td>' +
       '<td style="padding:7px 10px;text-align:center;white-space:nowrap">' +
       '<button class="btn bout bsm" onclick="window._segEditarCuotaInicial(\''+lote.id+'\')" style="font-size:11px;padding:4px 8px;margin-right:4px">✏️</button>' +
       (!dnPagado
@@ -855,58 +1060,220 @@ function tgEnviar(mensaje) {
         : '<button class="btn bout bsm" onclick="window._segDesmarcarCI(\''+lote.id+'\')" style="font-size:11px;padding:4px 10px;color:#888">↩</button>'
       ) + '</td></tr>';
 
-    return '<div class="card" style="margin-bottom:12px">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">' +
-      '<div><div style="font-size:14px;font-weight:800;color:#1a237e">Lote '+lote.id+' — '+(lote.buyer||'—')+'</div>' +
-      '<div style="font-size:11px;color:#666;margin-top:2px">C.C. '+(lote.cc||'—')+' · '+(lote.phone||'—')+' · '+(lote.mo||'—')+' meses · CI: '+fmtMonto(dnAmt)+'</div></div>' +
-      '<div style="text-align:right"><div style="font-size:13px;font-weight:700;color:#2e7d32">'+pagadas+'/'+totalC+' cuotas</div>' +
-      '<div style="font-size:11px;color:#888">'+pct+'% pagado</div></div></div>' +
-      '<div style="height:6px;background:#e0e0e0;border-radius:3px;margin-bottom:12px">' +
-      '<div style="height:6px;background:linear-gradient(90deg,#2e7d32,#66bb6a);border-radius:3px;width:'+pct+'%"></div></div>' +
-      (cuotas.length===0
-        ?'<div style="font-size:12px;color:#999;text-align:center;padding:10px">Generando cuotas…</div>'
-        :'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead>' +
-        '<tr style="background:#f5f5f5">' +
-        '<th style="padding:7px 10px;text-align:left">#</th>' +
-        '<th style="padding:7px 10px;text-align:left">Vence</th>' +
-        '<th style="padding:7px 10px;text-align:right">Monto</th>' +
-        '<th style="padding:7px 10px;text-align:center">Estado</th>' +
-        '<th style="padding:7px 10px;text-align:left">Pagado el</th>' +
-        '<th style="padding:7px 10px;text-align:right">Abonado</th>' +
-        '<th style="padding:7px 10px;text-align:left">Nota</th>' +
-        '<th style="padding:7px 10px;text-align:center">Acción</th>' +
-        '</tr></thead><tbody>' +
-        filaCuotaInicial +
-        cuotas.map(function(p){
-          var s=semaforo(p);
-          var abonado = Number(p.abonado) || 0;
-          var monto   = Number(p.monto)   || 0;
-          var pctAbono = monto > 0 && abonado > 0
-            ? Math.min(100, Math.round(abonado / monto * 100))
-            : 0;
-          var abonadoCell = abonado > 0
-            ? '<div style="white-space:nowrap">' + fmtMonto(abonado) +
-              '<div style="height:3px;background:#e0e0e0;border-radius:2px;margin-top:2px;width:60px">' +
-              '<div style="height:3px;background:#9c27b0;border-radius:2px;width:'+pctAbono+'%"></div></div></div>'
-            : '—';
-          return '<tr style="border-top:1px solid #f0f0f0">' +
-            '<td style="padding:7px 10px;font-weight:700;color:#1a237e">'+p.num_cuota+'</td>' +
-            '<td style="padding:7px 10px">'+fmtFecha(p.fecha_vence)+'</td>' +
-            '<td style="padding:7px 10px;text-align:right;font-weight:600">'+fmtMonto(p.monto)+'</td>' +
-            '<td style="padding:7px 10px;text-align:center"><span style="background:'+s.bg+';color:'+s.color+';padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700;white-space:nowrap">'+s.icono+' '+s.label+'</span></td>' +
-            '<td style="padding:7px 10px;color:#888">'+(p.fecha_pago?fmtFecha(p.fecha_pago):'—')+'</td>' +
-            '<td style="padding:7px 10px;color:#888;text-align:right">'+abonadoCell+'</td>' +
-            '<td style="padding:7px 10px;color:#888;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(p.nota||'—')+'</td>' +
-            '<td style="padding:7px 10px;text-align:center;white-space:nowrap">' +
-            '<button class="btn bout bsm" onclick="window._segEditarCuota(\''+p.id+'\')" style="font-size:11px;padding:4px 8px;margin-right:4px">✏️</button>' +
-            (!p.pagado
-              ?'<button class="btn bg bsm" onclick="window._segRegistrarPago(\''+p.id+'\')" style="font-size:11px;padding:4px 10px">+ Pago</button>'
-              :'<button class="btn bout bsm" onclick="window._segDesmarcarPago(\''+p.id+'\')" style="font-size:11px;padding:4px 10px;color:#888">↩</button>'
-            )+'</td></tr>';
-        }).join('')+
-        '</tbody></table></div>'
-      )+'</div>';
+    var resumen =
+      '<div style="padding:12px 16px;background:#f8f9ff;border-bottom:1px solid #e8eaf6;display:flex;gap:16px;flex-wrap:wrap;align-items:center">' +
+      '<div style="font-size:11px;color:#555">📋 <b>'+parseInt(lote.mo||0)+'</b> meses · ' +
+      'Precio: <b>'+fmtMonto(precio)+'</b> · ' +
+      'CI: <b>'+fmtMonto(dnAmt)+'</b> · ' +
+      'C.C.: <b>'+(lote.cc||'—')+'</b> · ' +
+      '📞 <b>'+(lote.phone||'—')+'</b>' +
+      (lote.saleDate ? ' · Inicio: <b>'+fmtFecha(lote.saleDate)+'</b>' : '') +
+      '</div>' +
+      '<div style="margin-left:auto;display:flex;gap:6px">' +
+      '<div style="font-size:11px;font-weight:700;color:#2e7d32">'+pagadas+'/'+totalC+' pagadas</div>' +
+      '</div>' +
+      '</div>';
+
+    if (cuotas.length === 0) {
+      return resumen +
+        '<div style="padding:24px;text-align:center;font-size:12px;color:#999">⏳ Generando cuotas…</div>';
+    }
+
+    return resumen +
+      '<div style="overflow-x:auto;padding:0 0 4px 0">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead>' +
+      '<tr style="background:#f5f5f5">' +
+      '<th style="padding:7px 10px;text-align:left">#</th>' +
+      '<th style="padding:7px 10px;text-align:left">Vence</th>' +
+      '<th style="padding:7px 10px;text-align:right">Monto</th>' +
+      '<th style="padding:7px 10px;text-align:center">Estado</th>' +
+      '<th style="padding:7px 10px;text-align:left">Pagado el</th>' +
+      '<th style="padding:7px 10px;text-align:right">Abonado</th>' +
+      '<th style="padding:7px 10px;text-align:left">Nota</th>' +
+      '<th style="padding:7px 10px;text-align:center">Acción</th>' +
+      '</tr></thead><tbody>' +
+      filaCuotaInicial +
+      cuotas.map(function(p){
+        var s       = semaforo(p);
+        var abonado = Number(p.abonado) || 0;
+        var monto   = Number(p.monto)   || 0;
+        var pctA    = monto > 0 && abonado > 0 ? Math.min(100, Math.round(abonado / monto * 100)) : 0;
+        var abonadoCell = abonado > 0
+          ? '<div style="white-space:nowrap">' + fmtMonto(abonado) +
+            '<div style="height:3px;background:#e0e0e0;border-radius:2px;margin-top:2px;width:60px">' +
+            '<div style="height:3px;background:#9c27b0;border-radius:2px;width:'+pctA+'%"></div></div></div>'
+          : '—';
+        return '<tr style="border-top:1px solid #f0f0f0">' +
+          '<td style="padding:7px 10px;font-weight:700;color:#1a237e">'+p.num_cuota+'</td>' +
+          '<td style="padding:7px 10px">'+fmtFecha(p.fecha_vence)+'</td>' +
+          '<td style="padding:7px 10px;text-align:right;font-weight:600">'+fmtMonto(p.monto)+'</td>' +
+          '<td style="padding:7px 10px;text-align:center"><span style="background:'+s.bg+';color:'+s.color+';padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700;white-space:nowrap">'+s.icono+' '+s.label+'</span></td>' +
+          '<td style="padding:7px 10px;color:#888">'+(p.fecha_pago?fmtFecha(p.fecha_pago):'—')+'</td>' +
+          '<td style="padding:7px 10px;color:#888;text-align:right">'+abonadoCell+'</td>' +
+          '<td style="padding:7px 10px;color:#888;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+_escapeHtml(p.nota||'—')+'</td>' +
+          '<td style="padding:7px 10px;text-align:center;white-space:nowrap">' +
+          '<button class="btn bout bsm" onclick="window._segEditarCuota(\''+p.id+'\')" style="font-size:11px;padding:4px 8px;margin-right:4px">✏️</button>' +
+          (!p.pagado
+            ?'<button class="btn bg bsm" onclick="window._segRegistrarPago(\''+p.id+'\')" style="font-size:11px;padding:4px 10px">+ Pago</button>'
+            :'<button class="btn bout bsm" onclick="window._segDesmarcarPago(\''+p.id+'\')" style="font-size:11px;padding:4px 10px;color:#888">↩</button>'
+          )+'</td></tr>';
+      }).join('') +
+      '</tbody></table></div>';
   }
+
+  /* ══════════════════════════════════════════════════════════
+     MODAL "EDITAR VENTA" — v6
+     Abre los datos principales del lote en un modal para editar.
+  ══════════════════════════════════════════════════════════ */
+  window._segEditarVenta = function(loteId) {
+    var lote = window.S && window.S.lots
+      ? window.S.lots.find(function(l){ return l.id === loteId; })
+      : null;
+    if (!lote) { alert('No se encontró el lote.'); return; }
+
+    var precio  = Number(lote.salePrice) || 0;
+    var dnPct   = Number(lote.dn) || 20;
+    var dnAmt   = Number(lote.dnAmt) > 0 ? Number(lote.dnAmt) : precio * dnPct / 100;
+    var cmAmt   = Number(lote.cmAmt) || 0;
+    var mo      = parseInt(lote.mo) || 0;
+
+    var body =
+      '<div style="background:#e3f2fd;border-radius:9px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#1565c0">' +
+      '📋 Lote <b>' + _escapeHtml(String(lote.id)) + '</b> — Edición de datos de la venta' +
+      '</div>' +
+
+      /* Comprador */
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Comprador *</label>' +
+      '<input id="evLoteBuyer" type="text" value="'+_escapeHtml(lote.buyer||'')+'" placeholder="Nombre completo" ' +
+      'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+
+      /* C.C. */
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Cédula (C.C.)</label>' +
+      '<input id="evLoteCC" type="text" value="'+_escapeHtml(lote.cc||'')+'" placeholder="Ej: 1234567890" ' +
+      'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+
+      /* Teléfono */
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Teléfono</label>' +
+      '<input id="evLotePhone" type="tel" value="'+_escapeHtml(lote.phone||'')+'" placeholder="Ej: 3001234567" ' +
+      'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+
+      /* Precio de venta */
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Precio de venta (millones COP) *</label>' +
+      '<input id="evLotePrecio" type="number" step="0.0001" value="'+precio+'" ' +
+      'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box" ' +
+      'oninput="window._segEVActualizar()">' +
+      '<div id="evLotePrecioPreview" style="font-size:11px;color:#888;margin-bottom:12px"></div>' +
+
+      /* Meses */
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Número de cuotas (meses) *</label>' +
+      '<input id="evLoteMo" type="number" min="1" max="360" value="'+mo+'" ' +
+      'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box" ' +
+      'oninput="window._segEVActualizar()">' +
+
+      /* Cuota inicial */
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Cuota inicial / Enganche (millones COP)</label>' +
+      '<input id="evLoteDN" type="number" step="0.0001" value="'+dnAmt+'" ' +
+      'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box" ' +
+      'oninput="window._segEVActualizar()">' +
+      '<div id="evLoteDNPreview" style="font-size:11px;color:#888;margin-bottom:12px"></div>' +
+
+      /* Cuota mensual */
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Cuota mensual (millones COP) — dejar en 0 para calcular automático</label>' +
+      '<input id="evLoteCM" type="number" step="0.0001" value="'+cmAmt+'" ' +
+      'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box" ' +
+      'oninput="window._segEVActualizar()">' +
+      '<div id="evLoteCMPreview" style="font-size:11px;color:#1565c0;font-weight:600;margin-bottom:12px"></div>' +
+
+      /* Fecha inicio */
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de inicio de cuotas</label>' +
+      '<input id="evLoteFecha" type="date" value="'+(lote.saleDate||'')+'" ' +
+      'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+
+      /* Advertencia regeneración */
+      '<div style="background:#fff3e0;border-radius:8px;padding:10px 12px;font-size:11px;color:#e65100;line-height:1.5">' +
+      '⚠️ Si cambias el precio, cuotas o meses, las cuotas existentes se <b>eliminarán y regenerarán</b> automáticamente.' +
+      '</div>';
+
+    _abrirModal('✏️ Editar venta — Lote ' + _escapeHtml(String(lote.id)), body, function() {
+      var buyer   = (document.getElementById('evLoteBuyer').value || '').trim();
+      var cc      = (document.getElementById('evLoteCC').value || '').trim();
+      var phone   = (document.getElementById('evLotePhone').value || '').trim();
+      var precioN = parseFloat(document.getElementById('evLotePrecio').value) || 0;
+      var moN     = parseInt(document.getElementById('evLoteMo').value)       || 0;
+      var dnN     = parseFloat(document.getElementById('evLoteDN').value)     || 0;
+      var cmN     = parseFloat(document.getElementById('evLoteCM').value)     || 0;
+      var fecha   = document.getElementById('evLoteFecha').value || '';
+
+      if (!buyer)    { alert('El nombre del comprador es obligatorio.'); return; }
+      if (precioN <= 0) { alert('El precio debe ser mayor a 0.'); return; }
+      if (moN <= 0)  { alert('El número de cuotas debe ser mayor a 0.'); return; }
+
+      var cambioFinanciero = (precioN !== (Number(lote.salePrice)||0)) ||
+                             (moN    !== (parseInt(lote.mo)||0))       ||
+                             (dnN    !== (Number(lote.dnAmt)||0))      ||
+                             (cmN    !== (Number(lote.cmAmt)||0))      ||
+                             (fecha  !== (lote.saleDate||''));
+
+      /* Actualizar lote en memoria */
+      lote.buyer     = buyer;
+      lote.cc        = cc;
+      lote.phone     = phone;
+      lote.salePrice = precioN;
+      lote.mo        = moN;
+      lote.dnAmt     = dnN;
+      lote.dn        = dnN > 0 && precioN > 0 ? Math.round(dnN / precioN * 100) : (Number(lote.dn)||20);
+      lote.cmAmt     = cmN;
+      lote.saleDate  = fecha;
+
+      /* Guardar en el sistema principal */
+      if (typeof saveS === 'function') saveS();
+      if (typeof syncLot === 'function') syncLot(lote);
+
+      /* Si cambiaron los datos financieros → forzar regeneración */
+      if (cambioFinanciero) {
+        /* Marcar cuotas existentes para que sincronizarCuotas las regenere */
+        var existentes = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota > 0; });
+        Promise.all(existentes.map(function(p){ return sbDelete('pagos', p.id); }))
+          .then(function(){
+            _pagos = _pagos.filter(function(p){ return !(p.lot_id === lote.id && p.num_cuota > 0); });
+            _acordeonesAbiertos[lote.id] = true;
+            return sincronizarCuotas(lote);
+          })
+          .then(function(){
+            _cerrarModal();
+            _renderVista();
+          })
+          .catch(function(e){ alert('Error al regenerar cuotas: ' + e.message); });
+      } else {
+        _acordeonesAbiertos[lote.id] = true;
+        _cerrarModal();
+        _renderVista();
+      }
+    });
+
+    /* Preview en tiempo real */
+    setTimeout(function() {
+      window._segEVActualizar = function() {
+        var p  = parseFloat(document.getElementById('evLotePrecio').value) || 0;
+        var m  = parseInt(document.getElementById('evLoteMo').value)        || 0;
+        var dn = parseFloat(document.getElementById('evLoteDN').value)      || 0;
+        var cm = parseFloat(document.getElementById('evLoteCM').value)      || 0;
+        var el = document.getElementById('evLotePrecioPreview');
+        if (el) el.textContent = p > 0 ? '→ ' + fmtMonto(p) : '';
+        var el2 = document.getElementById('evLoteDNPreview');
+        if (el2) el2.textContent = dn > 0 ? '→ ' + fmtMonto(dn) : '';
+        var el3 = document.getElementById('evLoteCMPreview');
+        if (el3) {
+          var saldo = Math.max(0, p - dn);
+          var cuotaCalc = (cm > 0) ? cm : (m > 0 ? saldo / m : 0);
+          el3.textContent = cuotaCalc > 0
+            ? '→ Cuota mensual: ' + fmtMonto(cuotaCalc) + (cm <= 0 ? ' (calculada)' : '')
+            : '';
+        }
+      };
+      window._segEVActualizar();
+    }, 80);
+  };
 
   /* ══════════════════════════════════════════════════════════
      VISTA 3 — PROSPECTOS
@@ -989,7 +1356,7 @@ function tgEnviar(mensaje) {
       document.body.appendChild(overlay);
     }
     overlay.innerHTML=
-      '<div style="background:#fff;border-radius:14px;padding:24px;width:460px;max-width:94vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">' +
+      '<div style="background:#fff;border-radius:14px;padding:24px;width:480px;max-width:94vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
       '<div style="font-size:15px;font-weight:800;color:#1a237e">'+titulo+'</div>' +
       '<button onclick="window._segCerrarModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888">✕</button>' +
@@ -1124,7 +1491,6 @@ function tgEnviar(mensaje) {
         if (esEdicion) {
           var idx = _eventos.findIndex(function(x) { return x.id === e.id; });
           if (idx >= 0) _eventos[idx] = Object.assign(_eventos[idx], datos);
-          /* Actualizar también en resultados de búsqueda si aplica */
           if (_resultadosBusq !== null) {
             var idxB = _resultadosBusq.findIndex(function(x){ return x.id === e.id; });
             if (idxB >= 0) _resultadosBusq[idxB] = Object.assign(_resultadosBusq[idxB], datos);
@@ -1240,7 +1606,10 @@ function tgEnviar(mensaje) {
       sbUpdate('pagos', pagoId, datosUpdate).then(function() {
         var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
         if (idx >= 0) Object.assign(_pagos[idx], datosUpdate);
-        _cerrarModal(); _renderVista(); _actualizarCampanita();
+        _cerrarModal();
+        /* Mantener el acordeón del lote abierto */
+        _acordeonesAbiertos[pago.lot_id] = true;
+        _renderVista(); _actualizarCampanita();
 
         if (esPagoTotal) {
           if ('Notification' in window && Notification.permission === 'granted') {
@@ -1285,6 +1654,7 @@ function tgEnviar(mensaje) {
   };
 
   window._segDesmarcarPago = function(pagoId) {
+    var pago = _pagos.find(function(p){ return p.id === pagoId; });
     if (!confirm('¿Desmarcar este pago? También se reiniciarán los abonos.')) return;
     sbUpdate('pagos', pagoId, { pagado: false, fecha_pago: null, nota: '', abonado: 0, notificado: false }).then(function() {
       var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
@@ -1294,6 +1664,7 @@ function tgEnviar(mensaje) {
         _pagos[idx].abonado    = 0;
         _pagos[idx].notificado = false;
       }
+      if (pago) _acordeonesAbiertos[pago.lot_id] = true;
       _renderVista(); _actualizarCampanita();
     });
   };
@@ -1349,6 +1720,7 @@ function tgEnviar(mensaje) {
           }
         })
         .then(function() {
+          _acordeonesAbiertos[pago.lot_id] = true;
           _cerrarModal(); _renderVista();
         })
         .catch(function(e){ alert('Error: ' + e.message); });
@@ -1377,7 +1749,7 @@ function tgEnviar(mensaje) {
       '<input id="segCIMonto" type="number" step="0.0001" value="'+dnAmt+'" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
       '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCIMontoPreview"></div>' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nota / Comprobante</label>' +
-      '<input id="segCINota" type="text" value="'+(lote.dnNota||'')+'" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
+      '<input id="segCINota" type="text" value="'+_escapeHtml(lote.dnNota||'')+'" placeholder="Ej: Transferencia #12345" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
     _abrirModal('✏️ Editar cuota inicial — Lote '+loteId, body, function() {
       var nuevoMonto = parseFloat(document.getElementById('segCIMonto').value);
       var nuevaFecha = document.getElementById('segCIFecha').value;
@@ -1388,6 +1760,7 @@ function tgEnviar(mensaje) {
       lote.dnNota  = nuevaNota;
       if (typeof saveS === 'function') saveS();
       if (typeof syncLot === 'function') syncLot(lote);
+      _acordeonesAbiertos[loteId] = true;
       _cerrarModal(); _renderVista();
     });
     setTimeout(function() {
@@ -1422,12 +1795,14 @@ function tgEnviar(mensaje) {
       if (ciExistente) {
         sbUpdate('pagos', ciExistente.id, { pagado: true, fecha_pago: fecha, monto: monto, nota: nota }).then(function() {
           ciExistente.pagado = true; ciExistente.fecha_pago = fecha; ciExistente.monto = monto; ciExistente.nota = nota;
+          _acordeonesAbiertos[loteId] = true;
           _cerrarModal(); _renderVista();
         }).catch(function(e){ alert('Error: ' + e.message); });
       } else {
         sbInsert('pagos', { lot_id: loteId, num_cuota: 0, fecha_vence: lote.dnFecha || lote.saleDate || hoy(), monto: monto, pagado: true, fecha_pago: fecha, nota: nota, abonado: 0 })
           .then(function(res) {
             if (Array.isArray(res)) _pagos = _pagos.concat(res);
+            _acordeonesAbiertos[loteId] = true;
             _cerrarModal(); _renderVista();
           }).catch(function(e){ alert('Error: ' + e.message); });
       }
@@ -1452,9 +1827,13 @@ function tgEnviar(mensaje) {
     if (ciExistente) {
       sbUpdate('pagos', ciExistente.id, { pagado: false, fecha_pago: null, nota: '' }).then(function() {
         ciExistente.pagado = false; ciExistente.fecha_pago = null; ciExistente.nota = '';
+        _acordeonesAbiertos[loteId] = true;
         _renderVista();
       }).catch(function(e){ alert('Error: ' + e.message); });
-    } else { _renderVista(); }
+    } else {
+      _acordeonesAbiertos[loteId] = true;
+      _renderVista();
+    }
   };
 
   /* ══════════════════════════════════════════════════════════
