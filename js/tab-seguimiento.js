@@ -36,6 +36,7 @@ function tgEnviar(mensaje) {
   var _vendedores     = [];
   var _vendedorActivo  = null;
   var _vendedorAgenda  = null;
+  var _busquedaAgenda  = '';
   var _vistaActiva    = 'agenda';
   var _mesActual      = new Date();
   var _diaSeleccionado = null;
@@ -445,15 +446,28 @@ function tgEnviar(mensaje) {
   /* ══════════════════════════════════════════════════════════
      VISTA 1 — AGENDA
   ══════════════════════════════════════════════════════════ */
-  function _renderAgenda(c) {
-    var hoyIso = hoy();
-    var evsFiltrados = _vendedorAgenda
-      ? _eventos.filter(function(e){ return e.vendedor_id === _vendedorAgenda; })
-      : _eventos;
+function _renderAgenda(c) {
+  var hoyIso = hoy();
 
-    var evHoy      = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===hoyIso && !e.completado; });
-    var evProx     = evsFiltrados.filter(function(e){ var d=diffDias(isoFecha(e.fecha)); return d>=0&&d<=7&&!e.completado; });
-    var evVencidos = evsFiltrados.filter(function(e){ return diffDias(isoFecha(e.fecha))<0&&!e.completado; });
+  // Filtro por vendedor
+  var evsFiltrados = _vendedorAgenda
+    ? _eventos.filter(function(e){ return e.vendedor_id === _vendedorAgenda; })
+    : _eventos;
+
+  // Filtro por búsqueda (título, relacionado, descripción o nombre de vendedor)
+  if (_busquedaAgenda) {
+   var q = _busquedaAgenda;
+    evsFiltrados = evsFiltrados.filter(function(e) {
+   var vend = _vendedores.find(function(v){ return v.id === e.vendedor_id; });
+      return (e.titulo       || '').toLowerCase().includes(q) ||
+             (e.relacionado  || '').toLowerCase().includes(q) ||
+             (e.descripcion  || '').toLowerCase().includes(q) ||
+             (vend ? vend.nombre.toLowerCase().includes(q) : false);
+    });
+  }
+  var evHoy      = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===hoyIso && !e.completado; });
+  var evProx     = evsFiltrados.filter(function(e){ var d=diffDias(isoFecha(e.fecha)); return d>=0&&d<=7&&!e.completado; });
+  var evVencidos = evsFiltrados.filter(function(e){ return diffDias(isoFecha(e.fecha))<0&&!e.completado; });
 
     var panelLateral = _diaSeleccionado ? _panelDia(_diaSeleccionado, evsFiltrados) : _panelProximos(evsFiltrados);
 
@@ -1569,6 +1583,10 @@ function tgEnviar(mensaje) {
   /* ══════════════════════════════════════════════════════════
      ENTRADA PÚBLICA
   ══════════════════════════════════════════════════════════ */
+  window._segBuscarAgenda = function(val) {
+  _busquedaAgenda = (val || '').toLowerCase().trim();
+  _renderVista();
+};
   window.initSeguimiento = function(){
     _renderPanel();
     cargarTodo();
