@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v6
+   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v7
    Cambios v6:
      PAGOS FIX  : Corregida la generación de cuotas cuando el lote
                   tiene datos incompletos (cmAmt / saldo 0). Ahora
@@ -9,6 +9,12 @@
                   Buscador de clientes/lotes en la parte superior.
                   Botón "Ver detalle / Editar venta" en la cabecera de
                   cada acordeón que abre el modal de edición del lote.
+   Ajustes adicionales:
+     RECAUDADO  : Solo suma cuotas marcadas como pagado=true (su monto)
+                  más abonos parciales (abonado) de cuotas aún no pagadas.
+                  Las cuotas iniciales no pagadas no suman.
+     EDITAR ABONO: El modal de editar cuota ahora permite modificar
+                  el valor abonado directamente.
    ═══════════════════════════════════════════════════════════════ */
 (function () {
 var TG_CHAT_ID = '-5030514648';
@@ -831,15 +837,26 @@ function tgEnviar(mensaje) {
       ? window.S.lots.filter(function(l){ return (l.status==='sold'||l.status==='apartado') && l.payType!=='cash'; })
       : []);
 
-    var totalRecaudado = _pagos.reduce(function(s,p){
-      if (p.pagado) return s + Number(p.monto);
-      return s + (Number(p.abonado) || 0);
+    /* ── RECAUDADO: suma de cuotas pagado=true (su monto) +
+          abonos parciales de cuotas pagado=false con abonado > 0.
+          Las cuotas iniciales (num_cuota === 0) no pagadas NO suman. ── */
+    var totalRecaudado = _pagos.reduce(function(s, p) {
+      if (p.pagado) {
+        /* Cuota completamente pagada: suma su monto íntegro */
+        return s + (Number(p.monto) || 0);
+      } else {
+        /* Cuota pendiente: suma solo lo abonado (si hay algo) */
+        return s + (Number(p.abonado) || 0);
+      }
     }, 0);
+
+    /* ── PENDIENTE: lo que falta por cobrar en cuotas no pagadas ── */
     var totalPendiente = _pagos.reduce(function(s,p){
       if (p.pagado) return s;
       var abonado = Number(p.abonado) || 0;
       return s + Math.max(0, Number(p.monto) - abonado);
     }, 0);
+
     var enMora = _pagos.filter(function(p){ return !p.pagado && diffDias(p.fecha_vence) < 0; }).length;
 
     /* ── Filtrar lotes según buscador ── */
@@ -1669,6 +1686,9 @@ function tgEnviar(mensaje) {
     });
   };
 
+  /* ══════════════════════════════════════════════════════════
+     MODAL EDITAR CUOTA — incluye campo "Abonado" editable
+  ══════════════════════════════════════════════════════════ */
   window._segEditarCuota = function(pagoId) {
     var pago = _pagos.find(function(p){ return p.id === pagoId; });
     if (!pago) return;
@@ -1677,15 +1697,29 @@ function tgEnviar(mensaje) {
       return p.lot_id === pago.lot_id && p.num_cuota > pago.num_cuota && !p.pagado;
     });
     var hayFuturas = cuotasLote.length > 0;
+    var abonadoActual = Number(pago.abonado) || 0;
+    var montoActual   = Number(pago.monto)   || 0;
 
     var body =
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de vencimiento</label>' +
       '<input id="segCuotaFecha" type="date" value="' + (pago.fecha_vence || '') + '" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto (en millones COP)</label>' +
       '<input id="segCuotaMonto" type="number" step="0.0001" value="' + (pago.monto || '') + '" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
       '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCuotaMontoPreview"></div>' +
+
+      /* ── Campo abonado editable ── */
+      '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Abonado actual (en millones COP)</label>' +
+      '<input id="segCuotaAbonado" type="number" step="0.0001" min="0" value="' + abonadoActual + '" ' +
+      'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
+      '<div style="font-size:11px;color:#888;margin-bottom:4px" id="segCuotaAbonadoPreview"></div>' +
+      '<div style="font-size:11px;color:#555;background:#f3e5f5;border-radius:7px;padding:8px 11px;margin-bottom:12px;line-height:1.5">' +
+      '💜 Editar este campo corrige directamente el abono registrado. ' +
+      'Si el abono iguala o supera el monto, la cuota se marcará como <b>pagada</b>.' +
+      '</div>' +
+
       (hayFuturas
         ? '<div style="background:#e3f2fd;border-radius:8px;padding:10px 12px;margin-bottom:4px">' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;color:#1565c0">' +
@@ -1698,40 +1732,79 @@ function tgEnviar(mensaje) {
       );
 
     _abrirModal('✏️ Editar cuota #' + pago.num_cuota + ' — Lote ' + pago.lot_id, body, function() {
-      var nuevaFecha  = document.getElementById('segCuotaFecha').value;
-      var nuevoMonto  = parseFloat(document.getElementById('segCuotaMonto').value);
-      var aplicarCasc = hayFuturas && document.getElementById('segCuotaCascada')
+      var nuevaFecha   = document.getElementById('segCuotaFecha').value;
+      var nuevoMonto   = parseFloat(document.getElementById('segCuotaMonto').value);
+      var nuevoAbonado = parseFloat(document.getElementById('segCuotaAbonado').value);
+      var aplicarCasc  = hayFuturas && document.getElementById('segCuotaCascada')
         ? document.getElementById('segCuotaCascada').checked
         : false;
 
       if (!nuevaFecha) { alert('La fecha es obligatoria.'); return; }
       if (isNaN(nuevoMonto) || nuevoMonto <= 0) { alert('Ingresa un monto válido.'); return; }
+      if (isNaN(nuevoAbonado) || nuevoAbonado < 0) { alert('El abono no puede ser negativo.'); return; }
 
-      sbUpdate('pagos', pagoId, { fecha_vence: nuevaFecha, monto: nuevoMonto, notificado: false })
+      /* Si el abono nuevo cubre el monto → marcar como pagada */
+      var quedaPagada = nuevoAbonado >= nuevoMonto;
+      var datosUpdate = {
+        fecha_vence : nuevaFecha,
+        monto       : nuevoMonto,
+        abonado     : quedaPagada ? nuevoMonto : nuevoAbonado,
+        notificado  : false
+      };
+      if (quedaPagada && !pago.pagado) {
+        datosUpdate.pagado     = true;
+        datosUpdate.fecha_pago = pago.fecha_pago || hoy();
+      } else if (!quedaPagada && pago.pagado) {
+        /* Si se reduce el abono y la cuota estaba pagada, desmarcarla */
+        datosUpdate.pagado     = false;
+        datosUpdate.fecha_pago = null;
+      }
+
+      sbUpdate('pagos', pagoId, datosUpdate)
         .then(function() {
           var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
-          if (idx >= 0) {
-            _pagos[idx].fecha_vence = nuevaFecha;
-            _pagos[idx].monto       = nuevoMonto;
-            _pagos[idx].notificado  = false;
-          }
+          if (idx >= 0) Object.assign(_pagos[idx], datosUpdate);
           if (aplicarCasc) {
             return _aplicarCascadaFechas(pago.lot_id, pago.num_cuota, nuevaFecha);
           }
         })
         .then(function() {
           _acordeonesAbiertos[pago.lot_id] = true;
-          _cerrarModal(); _renderVista();
+          _cerrarModal(); _renderVista(); _actualizarCampanita();
         })
         .catch(function(e){ alert('Error: ' + e.message); });
     });
 
     setTimeout(function() {
-      var inp  = document.getElementById('segCuotaMonto');
-      var prev = document.getElementById('segCuotaMontoPreview');
-      if (!inp || !prev) return;
-      function act() { var v = parseFloat(inp.value); prev.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v); }
-      inp.addEventListener('input', act); act();
+      var inpMonto   = document.getElementById('segCuotaMonto');
+      var inpAbonado = document.getElementById('segCuotaAbonado');
+      var prevMonto  = document.getElementById('segCuotaMontoPreview');
+      var prevAbon   = document.getElementById('segCuotaAbonadoPreview');
+
+      function actMonto() {
+        var v = parseFloat(inpMonto.value);
+        if (prevMonto) prevMonto.textContent = isNaN(v) ? '' : '→ ' + fmtMonto(v);
+        actAbonado();
+      }
+      function actAbonado() {
+        var a = parseFloat(inpAbonado ? inpAbonado.value : 0) || 0;
+        var m = parseFloat(inpMonto   ? inpMonto.value   : 0) || 0;
+        if (!prevAbon) return;
+        if (a <= 0) {
+          prevAbon.textContent = '';
+        } else if (m > 0 && a >= m) {
+          prevAbon.textContent = '→ ' + fmtMonto(a) + ' — ✅ cubrirá el monto completo (se marcará pagada)';
+          prevAbon.style.color = '#2e7d32';
+        } else {
+          var pct = m > 0 ? Math.min(99, Math.round(a / m * 100)) : 0;
+          prevAbon.textContent = '→ ' + fmtMonto(a) + ' — 💜 ' + pct + '% del monto';
+          prevAbon.style.color = '#6a1b9a';
+        }
+      }
+
+      if (inpMonto)   inpMonto.addEventListener('input', actMonto);
+      if (inpAbonado) inpAbonado.addEventListener('input', actAbonado);
+      actMonto();
     }, 100);
   };
 
