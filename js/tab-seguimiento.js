@@ -1,15 +1,15 @@
 /* ═══════════════════════════════════════════════════════════════
-   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v4
-   Cambios v4:
-     ABONOS    : Campo "Monto a pagar" en modal de pago. Si el monto
-                 ingresado es menor al total de la cuota, se acumula
-                 en columna `abonado` y el estado muestra "Abono X%".
-                 Cuando abonado >= monto → pagado: true automático.
-     CASCADA   : Al editar la fecha de cualquier cuota (excepto CI),
-                 todas las siguientes que NO estén pagadas se
-                 recalculan sumando exactamente +1 mes a la anterior,
-                 manteniendo el mismo día del mes. La edición manual
-                 individual sigue disponible.
+   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v5
+   Cambios v5:
+     PANEL DÍA  : Al hacer clic en un día del calendario, ahora
+                  también se muestran las cuotas de pagos que
+                  vencen ese día (además de los eventos). Así los
+                  puntos azules/rojos/naranja siempre corresponden
+                  a algo visible al hacer clic.
+     BUSCADOR   : Nuevo buscador de eventos por título. Busca en
+                  la tabla `eventos` de Supabase. La búsqueda es
+                  case-sensitive (distingue mayúsculas/minúsculas).
+                  Aparece encima del calendario en la vista Agenda.
    ═══════════════════════════════════════════════════════════════ */
 (function () {
 var TG_CHAT_ID = '-5030514648';
@@ -41,6 +41,10 @@ function tgEnviar(mensaje) {
   var _diaSeleccionado = null;
   var _realtimeSubs   = [];
   var _notifVistas    = {};
+
+  /* ── NUEVO v5: estado del buscador ───────────────────────── */
+  var _busquedaEvento  = '';        // texto actual del buscador
+  var _resultadosBusq  = null;      // null = no buscando, [] = sin resultados
 
   /* ── Helpers de fecha ─────────────────────────────────────── */
   var MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
@@ -92,14 +96,12 @@ function tgEnviar(mensaje) {
     }).format(Math.round(val * 1e6));
   }
 
-  /* ── NUEVO: sumar +N meses conservando el día ────────────── */
+  /* ── Sumar +N meses conservando el día ──────────────────── */
   function sumarMes(isoFechaStr, meses) {
     var p = isoFechaStr.slice(0,10).split('-').map(Number);
     var d = new Date(p[0], p[1] - 1 + meses, p[2]);
-    // Si el día se desbordó (ej: 31 + 1mes → 3 del siguiente), retroceder al último día del mes destino
-    var mesDestino = (p[1] - 1 + meses) % 12;
     if (d.getMonth() !== ((p[1] - 1 + meses) % 12 + 12) % 12) {
-      d = new Date(d.getFullYear(), d.getMonth(), 0); // último día del mes anterior al desbordado
+      d = new Date(d.getFullYear(), d.getMonth(), 0);
     }
     return _padFecha(d.getFullYear(), d.getMonth() + 1, d.getDate());
   }
@@ -208,49 +210,32 @@ function tgEnviar(mensaje) {
     }).catch(function(e){ console.error('[Seguimiento] Error cuotas', lote.id, e); });
   }
 
-  /* ══════════════════════════════════════════════════════════
-     NUEVO: CASCADA DE FECHAS
-     Al editar la fecha de la cuota `numCuotaEditada` del lote
-     `lotId`, recalcula en cascada todas las cuotas SIGUIENTES
-     que no estén pagadas, sumando +1 mes a la anterior.
-     Excluye siempre la CI (num_cuota === 0).
-  ══════════════════════════════════════════════════════════ */
+  /* ── Cascada de fechas ────────────────────────────────────── */
   function _aplicarCascadaFechas(lotId, numCuotaEditada, nuevaFechaEditada) {
-    // Obtener todas las cuotas del lote ordenadas por num_cuota, excluyendo CI
     var cuotasLote = _pagos
       .filter(function(p){ return p.lot_id === lotId && p.num_cuota > 0; })
       .sort(function(a,b){ return a.num_cuota - b.num_cuota; });
 
     if (cuotasLote.length === 0) return Promise.resolve();
 
-    // Construir mapa num_cuota → pago para acceso rápido
     var mapaFechas = {};
     cuotasLote.forEach(function(p){ mapaFechas[p.num_cuota] = p.fecha_vence; });
-
-    // La cuota editada ya tiene su nueva fecha
     mapaFechas[numCuotaEditada] = nuevaFechaEditada;
 
-    // Recalcular en cascada desde numCuotaEditada+1 en adelante
     var promesas = [];
     for (var i = 0; i < cuotasLote.length; i++) {
       var cuota = cuotasLote[i];
       if (cuota.num_cuota <= numCuotaEditada) continue;
       if (cuota.pagado) {
-        // Cuota ya pagada: actualizar referencia del mapa pero no tocar BD
         mapaFechas[cuota.num_cuota] = cuota.fecha_vence;
         continue;
       }
-      // Calcular +1 mes respecto a la cuota anterior
       var fechaAnterior = mapaFechas[cuota.num_cuota - 1];
       if (!fechaAnterior) continue;
       var nuevaFecha = sumarMes(fechaAnterior, 1);
       mapaFechas[cuota.num_cuota] = nuevaFecha;
-
-      // Actualizar en memoria
       cuota.fecha_vence = nuevaFecha;
       cuota.notificado  = false;
-
-      // Actualizar en Supabase
       promesas.push(
         sbUpdate('pagos', cuota.id, { fecha_vence: nuevaFecha, notificado: false })
       );
@@ -261,18 +246,15 @@ function tgEnviar(mensaje) {
     });
   }
 
-  /* ── Semáforo — ahora incluye estado "Abono" ─────────────── */
+  /* ── Semáforo ─────────────────────────────────────────────── */
   function semaforo(pago) {
     if (pago.pagado) return { color:'#2e7d32', bg:'#e8f5e9', icono:'✅', label:'Pagado' };
-
-    // ── NUEVO: abono parcial ──
     var abonado = Number(pago.abonado) || 0;
     var monto   = Number(pago.monto)   || 0;
     if (abonado > 0 && monto > 0) {
       var pct = Math.min(99, Math.round(abonado / monto * 100));
       return { color:'#6a1b9a', bg:'#f3e5f5', icono:'💜', label:'Abono ' + pct + '%' };
     }
-
     var d = diffDias(pago.fecha_vence);
     if (d < 0)  return { color:'#c62828', bg:'#ffebee', icono:'🔴', label:'Vencida '+Math.abs(d)+'d' };
     if (d <= 7) return { color:'#e65100', bg:'#fff3e0', icono:'🟡', label:'Vence en '+d+'d' };
@@ -467,6 +449,35 @@ function tgEnviar(mensaje) {
       vendAgendaNombre = va ? ' — 👤 ' + va.nombre : '';
     }
 
+    /* ── NUEVO v5: render del buscador ── */
+    var busqVal = _busquedaEvento || '';
+    var busqHTML =
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;' +
+      'background:#fff;border:1.5px solid #ddd;border-radius:10px;padding:6px 12px;' +
+      'box-shadow:0 1px 4px rgba(0,0,0,.06)">' +
+      '<span style="font-size:15px;color:#888">🔍</span>' +
+      '<input id="segBusqEvento" type="text" value="'+_escapeHtml(busqVal)+'" ' +
+      'placeholder="Buscar evento por título (sensible a Mayúsculas/minúsculas)…" ' +
+      'style="flex:1;border:none;outline:none;font-size:13px;background:transparent;color:#333" ' +
+      'oninput="window._segBuscarEvento(this.value)">' +
+      (busqVal
+        ? '<button onclick="window._segLimpiarBusqueda()" title="Limpiar búsqueda" ' +
+          'style="background:none;border:none;cursor:pointer;font-size:16px;color:#888;line-height:1;padding:0 2px">✕</button>'
+        : '') +
+      '</div>';
+
+    /* ── Si hay búsqueda activa, mostrar resultados en lugar del calendario ── */
+    var cuerpoAgenda;
+    if (_resultadosBusq !== null) {
+      cuerpoAgenda = _renderResultadosBusqueda(_resultadosBusq, busqVal);
+    } else {
+      cuerpoAgenda =
+        '<div style="display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start">' +
+        '<div class="card" style="padding:16px">'+_buildCalendario(evsFiltrados)+'</div>' +
+        '<div>'+panelLateral+'</div>' +
+        '</div>';
+    }
+
     c.innerHTML =
       '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
       '<select id="segFiltroAgendaVend" onchange="window._segCambiarVendedorAgenda(this.value)" ' +
@@ -479,11 +490,10 @@ function tgEnviar(mensaje) {
       _kpiBox('🟡 Hoy',      evHoy.length,      '#fff3e0','#e65100') +
       _kpiBox('🔵 Próx. 7d', evProx.length,     '#e3f2fd','#1565c0') +
       '</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 340px;gap:14px;align-items:start">' +
-      '<div class="card" style="padding:16px">'+_buildCalendario(evsFiltrados)+'</div>' +
-      '<div>'+panelLateral+'</div>' +
-      '</div>';
+      busqHTML +
+      cuerpoAgenda;
 
+    /* eventos del DOM */
     var prev = document.getElementById('calPrev');
     var next = document.getElementById('calNext');
     if (prev) prev.onclick = function() { _mesActual=new Date(_mesActual.getFullYear(),_mesActual.getMonth()-1,1); _renderVista(); };
@@ -492,14 +502,170 @@ function tgEnviar(mensaje) {
     c.querySelectorAll('[data-caldia]').forEach(function(cel) {
       cel.addEventListener('click', function() { _diaSeleccionado=this.dataset.caldia; _renderVista(); });
     });
+
+    /* Foco automático al input de búsqueda si había texto */
+    if (busqVal) {
+      var inp = document.getElementById('segBusqEvento');
+      if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+    }
+
     _pedirPermisoNotificacion();
   }
 
+  /* ── NUEVO v5: helper escape HTML básico ─────────────────── */
+  function _escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+
+  /* ── NUEVO v5: lógica de búsqueda (case-sensitive) ────────── */
+  window._segBuscarEvento = function(valor) {
+    _busquedaEvento = valor;
+    if (!valor || valor.trim() === '') {
+      _resultadosBusq = null;
+      _renderVista();
+      return;
+    }
+    /* Búsqueda local en _eventos — case-sensitive con indexOf */
+    var termino = valor.trim();
+    var resultados = _eventos.filter(function(e) {
+      return (e.titulo || '').indexOf(termino) !== -1;
+    });
+    _resultadosBusq = resultados;
+    _renderVista();
+  };
+
+  window._segLimpiarBusqueda = function() {
+    _busquedaEvento  = '';
+    _resultadosBusq  = null;
+    _renderVista();
+  };
+
+  /* ── NUEVO v5: render de resultados de búsqueda ─────────── */
+  function _renderResultadosBusqueda(resultados, termino) {
+    var encabezado =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
+      '<div style="font-size:13px;font-weight:800;color:#1a237e">' +
+      '🔍 Resultados para <span style="color:#1565c0;font-style:italic">"'+_escapeHtml(termino)+'"</span>' +
+      ' <span style="font-weight:500;color:#666">('+resultados.length+' encontrado'+(resultados.length!==1?'s':'')+')</span></div>' +
+      '<div style="font-size:11px;color:#888;font-style:italic">⚠️ Sensible a Mayúsculas/minúsculas</div>' +
+      '</div>';
+
+    if (resultados.length === 0) {
+      return '<div class="card" style="padding:20px;text-align:center">' +
+        encabezado +
+        '<div style="font-size:13px;color:#999;padding:24px 0">No se encontraron eventos con ese título exacto.</div>' +
+        '</div>';
+    }
+
+    var ordenados = resultados.slice().sort(function(a,b){ return (a.fecha||'')>(b.fecha||'')?1:-1; });
+
+    return '<div class="card" style="padding:16px">' +
+      encabezado +
+      ordenados.map(function(e) { return _cardEventoBusqueda(e, termino); }).join('') +
+      '</div>';
+  }
+
+  /* ── NUEVO v5: card de evento en resultados (resalta coincidencia) */
+  function _cardEventoBusqueda(e, termino) {
+    var tipos = {
+      reunion:      { icono:'🤝', color:'#1565c0', bg:'#e3f2fd' },
+      llamada:      { icono:'📞', color:'#6a1b9a', bg:'#f3e5f5' },
+      presentacion: { icono:'📋', color:'#2e7d32', bg:'#e8f5e9' },
+      seguimiento:  { icono:'🔔', color:'#e65100', bg:'#fff3e0' },
+      pago:         { icono:'💳', color:'#c62828', bg:'#ffebee' },
+    };
+    var t = tipos[e.tipo] || tipos.reunion;
+    var d = diffDias(isoFecha(e.fecha));
+    var dLabel = d===0?'Hoy':d===1?'Mañana':d<0?'Hace '+Math.abs(d)+'d':'En '+d+'d';
+    var hora = fmtHora(e.fecha);
+
+    /* Resaltar el término en el título (case-sensitive) */
+    var tituloResaltado = _resaltarTermino(e.titulo || '', termino);
+
+    var vend = _vendedores.find(function(v){ return v.id===e.vendedor_id; });
+
+    return '<div style="display:flex;gap:10px;align-items:flex-start;padding:10px;border-radius:9px;margin-bottom:8px;' +
+      'background:'+(e.completado?'#f5f5f5':t.bg)+';opacity:'+(e.completado?.6:1)+';border-left:3px solid '+(e.completado?'#bbb':t.color)+'">' +
+      '<div style="font-size:18px;line-height:1">'+(e.completado?'✅':t.icono)+'</div>' +
+      '<div style="flex:1;min-width:0">' +
+      '<div style="font-size:12px;font-weight:700;color:'+(e.completado?'#888':t.color)+'">'+(e.completado?'<s>':'')+tituloResaltado+(e.completado?'</s>':'')+'</div>' +
+      '<div style="font-size:11px;color:#666;margin-top:2px">'+fmtFecha(isoFecha(e.fecha))+(hora?' · '+hora:'')+' · '+dLabel+'</div>' +
+      (vend?'<div style="display:inline-block;font-size:10px;padding:2px 7px;border-radius:10px;background:#e8eaf6;color:#3949ab;font-weight:700;margin-top:3px">👤 '+vend.nombre+'</div>':'') +
+      (e.descripcion?'<div style="font-size:11px;color:#888;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+_escapeHtml(e.descripcion)+'</div>':'') +
+      '</div>' +
+      '<div style="display:flex;gap:2px;flex-shrink:0;flex-direction:column;align-items:flex-end">' +
+      '<button onclick="window._segEditarEvento(\''+e.id+'\')" title="Editar" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px">✏️</button>' +
+      (!e.completado
+        ? '<button onclick="window._segCompletarEvento(\''+e.id+'\')" title="Completado" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px">✅</button>'
+        : '<button onclick="window._segRevertirEvento(\''+e.id+'\')" title="Pendiente" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px">↩️</button>'
+      ) +
+      '<button onclick="window._segEliminarEvento(\''+e.id+'\')" title="Eliminar" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px">🗑️</button>' +
+      '</div></div>';
+  }
+
+  /* ── NUEVO v5: resaltar término en texto (case-sensitive) ── */
+  function _resaltarTermino(texto, termino) {
+    if (!termino) return _escapeHtml(texto);
+    /* Dividir por ocurrencias (case-sensitive) */
+    var resultado = '';
+    var idx = 0;
+    var pos;
+    while ((pos = texto.indexOf(termino, idx)) !== -1) {
+      resultado += _escapeHtml(texto.slice(idx, pos));
+      resultado += '<mark style="background:#fff176;color:#333;border-radius:2px;padding:0 1px">'+_escapeHtml(texto.slice(pos, pos + termino.length))+'</mark>';
+      idx = pos + termino.length;
+    }
+    resultado += _escapeHtml(texto.slice(idx));
+    return resultado;
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     PANEL DÍA — OPCIÓN B: incluye cuotas del día
+  ══════════════════════════════════════════════════════════ */
   function _panelDia(isoD, evsFiltrados) {
-    var evsFiltrados = evsFiltrados || _eventos;
-    var evsDia = evsFiltrados.filter(function(e){ return isoFecha(e.fecha)===isoD; })
-      .sort(function(a,b){ return (a.fecha||'')>(b.fecha||'')?1:-1; });
-    var label = isoD===hoy()?'Hoy':fmtFecha(isoD);
+    evsFiltrados = evsFiltrados || _eventos;
+
+    /* Eventos del día */
+    var evsDia = evsFiltrados
+      .filter(function(e){ return isoFecha(e.fecha) === isoD; })
+      .sort(function(a,b){ return (a.fecha||'') > (b.fecha||'') ? 1 : -1; });
+
+    /* ── NUEVO v5: cuotas que vencen ese día ─────────────── */
+    var cuotasDia = _pagos.filter(function(p){
+      return p.fecha_vence && isoFecha(p.fecha_vence) === isoD;
+    });
+
+    var label = isoD === hoy() ? 'Hoy' : fmtFecha(isoD);
+
+    var htmlCuotas = '';
+    if (cuotasDia.length > 0) {
+      htmlCuotas =
+        '<div style="font-size:11px;font-weight:800;color:#e65100;text-transform:uppercase;' +
+        'letter-spacing:.5px;margin:10px 0 6px">💳 Cuotas que vencen este día</div>' +
+        cuotasDia.map(function(p) {
+          var s = semaforo(p);
+          var lote = window.S && window.S.lots
+            ? window.S.lots.find(function(l){ return l.id === p.lot_id; })
+            : null;
+          var comprador = lote && lote.buyer ? lote.buyer : 'Lote ' + p.lot_id;
+          var esCI = p.num_cuota === 0;
+          return '<div style="display:flex;justify-content:space-between;align-items:center;' +
+            'padding:8px 10px;border-radius:8px;margin-bottom:5px;' +
+            'background:'+s.bg+';border-left:3px solid '+s.color+'">' +
+            '<div>' +
+            '<div style="font-size:12px;font-weight:700;color:'+s.color+'">'+
+              s.icono+' '+(esCI?'Cuota Inicial':'Cuota #'+p.num_cuota)+' — '+comprador+'</div>' +
+            '<div style="font-size:11px;color:#666;margin-top:1px">'+fmtMonto(p.monto)+'</div>' +
+            '</div>' +
+            '<span style="background:'+s.bg+';color:'+s.color+';padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;border:1px solid '+s.color+';white-space:nowrap">'+s.label+'</span>' +
+            '</div>';
+        }).join('');
+    }
+
     return '<div class="card" style="padding:14px">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
       '<div style="font-size:13px;font-weight:800;color:#1a237e">📅 '+label+'</div>' +
@@ -507,14 +673,20 @@ function tgEnviar(mensaje) {
       '<button class="btn bg bsm" onclick="window._segNuevoEvento(\''+isoD+'\')">+ Evento</button>' +
       '<button onclick="window._segCerrarDia()" style="background:none;border:none;cursor:pointer;font-size:18px;color:#888;line-height:1">✕</button>' +
       '</div></div>' +
-      (evsDia.length===0
-        ? '<div style="font-size:12px;color:#999;text-align:center;padding:20px 0">Sin eventos para este día</div>'
-        : evsDia.map(_cardEvento).join('')
-      )+'</div>';
+      /* Sección de eventos del día */
+      (evsDia.length === 0 && cuotasDia.length === 0
+        ? '<div style="font-size:12px;color:#999;text-align:center;padding:20px 0">Sin eventos ni cuotas para este día</div>'
+        : '') +
+      (evsDia.length > 0
+        ? '<div style="font-size:11px;font-weight:800;color:#1565c0;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">📅 Eventos</div>' +
+          evsDia.map(_cardEvento).join('')
+        : '') +
+      htmlCuotas +
+      '</div>';
   }
 
   function _panelProximos(evsFiltrados) {
-    var evsFiltrados = evsFiltrados || _eventos;
+    evsFiltrados = evsFiltrados || _eventos;
     var proximos = evsFiltrados.filter(function(e){
       var d=diffDias(isoFecha(e.fecha)); return d>=-1&&d<=14;
     }).sort(function(a,b){ return (a.fecha||'')>(b.fecha||'')?1:-1; });
@@ -530,7 +702,7 @@ function tgEnviar(mensaje) {
   }
 
   function _buildCalendario(evsFiltrados) {
-    var evsFiltrados = evsFiltrados || _eventos;
+    evsFiltrados = evsFiltrados || _eventos;
     var anio=_mesActual.getFullYear(), mes=_mesActual.getMonth(), hoyIso=hoy();
     var primerDia=new Date(anio,mes,1).getDay(), diasMes=new Date(anio,mes+1,0).getDate();
     var evMes={};
@@ -542,12 +714,16 @@ function tgEnviar(mensaje) {
         evMes[d].push(e);
       }
     });
-    _pagos.filter(function(p){ return !p.pagado&&p.fecha_vence&&p.fecha_vence.slice(0,7)===(anio+'-'+_pad(mes+1)); })
-      .forEach(function(p){
-        var d=parseInt(p.fecha_vence.slice(8,10));
-        if(!evMes[d]) evMes[d]=[];
-        evMes[d].push({tipo:'pago',titulo:'Cuota '+p.lot_id,fecha:p.fecha_vence});
-      });
+
+    /* ── OPCIÓN B: también incluir cuotas en el mapa del calendario ── */
+    _pagos.filter(function(p){
+      return !p.pagado && p.fecha_vence &&
+             p.fecha_vence.slice(0,7) === (anio+'-'+_pad(mes+1));
+    }).forEach(function(p){
+      var d = parseInt(p.fecha_vence.slice(8,10));
+      if (!evMes[d]) evMes[d] = [];
+      evMes[d].push({ tipo:'pago', titulo:'Cuota '+p.lot_id, fecha:p.fecha_vence });
+    });
 
     var html='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
       '<button id="calPrev" style="background:none;border:none;font-size:18px;cursor:pointer;color:#1565c0">‹</button>' +
@@ -570,7 +746,7 @@ function tgEnviar(mensaje) {
       });
       var bg=esSel?'#0d47a1':esHoy?'#1565C0':'transparent';
       var color=(esHoy||esSel)?'#fff':'#333';
-      html+='<div data-caldia="'+iso+'" style="text-align:center;padding:6px 2px;border-radius:8px;font-size:12px;cursor:pointer;background:'+bg+';color:'+color+';font-weight:'+(esHoy||esSel?'800':'400')+';border:2px solid '+(esSel?'#0d47a1':'transparent')+';position:relative;transition:.1s" title="'+(tieneEv?evs.length+' evento(s)':'Sin eventos')+'">'+d+
+      html+='<div data-caldia="'+iso+'" style="text-align:center;padding:6px 2px;border-radius:8px;font-size:12px;cursor:pointer;background:'+bg+';color:'+color+';font-weight:'+(esHoy||esSel?'800':'400')+';border:2px solid '+(esSel?'#0d47a1':'transparent')+';position:relative;transition:.1s" title="'+(tieneEv?evs.length+' evento(s)/cuota(s)':'Sin eventos')+'">'+d+
         (tieneEv?'<div style="width:5px;height:5px;border-radius:50%;background:'+((esHoy||esSel)?'#fff':puntoColor)+';margin:2px auto 0"></div>':'<div style="height:7px"></div>')+
         '</div>';
     }
@@ -599,10 +775,10 @@ function tgEnviar(mensaje) {
       'background:'+(e.completado?'#f5f5f5':t.bg)+';opacity:'+(e.completado?.6:1)+';border-left:3px solid '+(e.completado?'#bbb':t.color)+'">' +
       '<div style="font-size:18px;line-height:1">'+(e.completado?'✅':t.icono)+'</div>' +
       '<div style="flex:1;min-width:0">' +
-      '<div style="font-size:12px;font-weight:700;color:'+(e.completado?'#888':t.color)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(e.completado?'<s>':'')+e.titulo+(e.completado?'</s>':'')+'</div>' +
+      '<div style="font-size:12px;font-weight:700;color:'+(e.completado?'#888':t.color)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(e.completado?'<s>':'')+_escapeHtml(e.titulo||'')+(e.completado?'</s>':'')+'</div>' +
       '<div style="font-size:11px;color:#666;margin-top:2px">'+fmtFecha(isoFecha(e.fecha))+(hora?' · '+hora:'')+' · '+dLabel+recLabel+'</div>' +
       (e.vendedor_id ? (function(){ var v=_vendedores.find(function(x){return x.id===e.vendedor_id;}); return v?'<div style="display:inline-block;font-size:10px;padding:2px 7px;border-radius:10px;background:#e8eaf6;color:#3949ab;font-weight:700;margin-top:3px">👤 '+v.nombre+'</div>':''; })() : '') +
-      (e.descripcion?'<div style="font-size:11px;color:#888;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.descripcion+'</div>':'') +
+      (e.descripcion?'<div style="font-size:11px;color:#888;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+_escapeHtml(e.descripcion)+'</div>':'') +
       '</div>' +
       '<div style="display:flex;gap:2px;flex-shrink:0;flex-direction:column;align-items:flex-end">' +
       '<button onclick="window._segEditarEvento(\''+e.id+'\')" title="Editar" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px">✏️</button>' +
@@ -622,7 +798,6 @@ function tgEnviar(mensaje) {
       ?window.S.lots.filter(function(l){ return (l.status==='sold'||l.status==='apartado')&&l.payType!=='cash'; })
       :[]);
 
-    // ── NUEVO: en recaudado contar también lo abonado parcialmente ──
     var totalRecaudado = _pagos.reduce(function(s,p){
       if (p.pagado) return s + Number(p.monto);
       return s + (Number(p.abonado) || 0);
@@ -671,7 +846,6 @@ function tgEnviar(mensaje) {
       '<td style="padding:7px 10px;text-align:right;font-weight:800;color:#1565c0">' + fmtMonto(dnAmt) + '</td>' +
       '<td style="padding:7px 10px;text-align:center"><span style="background:'+sDn.bg+';color:'+sDn.color+';padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700">'+sDn.icono+' '+sDn.label+'</span></td>' +
       '<td style="padding:7px 10px;color:#888">' + (dnPagado && dnFecha ? fmtFecha(dnFecha) : '—') + '</td>' +
-      /* NUEVO: columna Abonado para CI — siempre vacío */
       '<td style="padding:7px 10px;color:#888;text-align:right">—</td>' +
       '<td style="padding:7px 10px;color:#888;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (dnNota || '—') + '</td>' +
       '<td style="padding:7px 10px;text-align:center;white-space:nowrap">' +
@@ -698,7 +872,6 @@ function tgEnviar(mensaje) {
         '<th style="padding:7px 10px;text-align:right">Monto</th>' +
         '<th style="padding:7px 10px;text-align:center">Estado</th>' +
         '<th style="padding:7px 10px;text-align:left">Pagado el</th>' +
-        /* NUEVO encabezado */
         '<th style="padding:7px 10px;text-align:right">Abonado</th>' +
         '<th style="padding:7px 10px;text-align:left">Nota</th>' +
         '<th style="padding:7px 10px;text-align:center">Acción</th>' +
@@ -708,7 +881,6 @@ function tgEnviar(mensaje) {
           var s=semaforo(p);
           var abonado = Number(p.abonado) || 0;
           var monto   = Number(p.monto)   || 0;
-          // Mini barra de progreso de abono
           var pctAbono = monto > 0 && abonado > 0
             ? Math.min(100, Math.round(abonado / monto * 100))
             : 0;
@@ -723,7 +895,6 @@ function tgEnviar(mensaje) {
             '<td style="padding:7px 10px;text-align:right;font-weight:600">'+fmtMonto(p.monto)+'</td>' +
             '<td style="padding:7px 10px;text-align:center"><span style="background:'+s.bg+';color:'+s.color+';padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700;white-space:nowrap">'+s.icono+' '+s.label+'</span></td>' +
             '<td style="padding:7px 10px;color:#888">'+(p.fecha_pago?fmtFecha(p.fecha_pago):'—')+'</td>' +
-            /* NUEVO: columna abonado con barra */
             '<td style="padding:7px 10px;color:#888;text-align:right">'+abonadoCell+'</td>' +
             '<td style="padding:7px 10px;color:#888;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(p.nota||'—')+'</td>' +
             '<td style="padding:7px 10px;text-align:center;white-space:nowrap">' +
@@ -745,7 +916,7 @@ function tgEnviar(mensaje) {
     {id:'presentacion',label:'📋 Presentación', color:'#6a1b9a',bg:'#f3e5f5'},
     {id:'negociacion', label:'🤝 Negociación',  color:'#e65100',bg:'#fff3e0'},
     {id:'cerrado',     label:'✅ Cerrado',       color:'#2e7d32',bg:'#e8f5e9'},
-    {id:'perdido',     label:'❌ Dame Referidos',  color:'#757575',bg:'#f5f5f5'},
+    {id:'perdido',     label:'❌ Dame Referidos',color:'#757575',bg:'#f5f5f5'},
   ];
 
   function _renderProspectos(c) {
@@ -787,11 +958,11 @@ function tgEnviar(mensaje) {
     var vend=_vendedores.find(function(v){return v.id===p.vendedor_id;});
     var vendNombre=vend?vend.nombre:'';
     return '<div style="background:#fff;border-radius:8px;padding:10px;margin-bottom:8px;box-shadow:0 1px 4px rgba(0,0,0,.08);border-left:3px solid '+est.color+'">' +
-      '<div style="font-size:12px;font-weight:700;color:#1a237e;margin-bottom:4px">'+p.nombre+'</div>' +
+      '<div style="font-size:12px;font-weight:700;color:#1a237e;margin-bottom:4px">'+_escapeHtml(p.nombre)+'</div>' +
       (p.telefono?'<div style="font-size:11px;color:#666">📞 '+p.telefono+'</div>':'') +
       (vendNombre?'<div style="display:inline-block;font-size:10px;padding:2px 7px;border-radius:10px;background:#e8eaf6;color:#3949ab;font-weight:700;margin-top:4px">👤 '+vendNombre+'</div>':'') +
       (p.next_follow?'<div style="font-size:10px;margin-top:4px;color:'+(alertaSeg?'#c62828':'#888')+'">'+(alertaSeg?'🔔 ':'📅 ')+'Seguimiento: '+fmtFecha(p.next_follow)+'</div>':'') +
-      (p.notas?'<div style="font-size:10px;color:#999;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+p.notas+'</div>':'') +
+      (p.notas?'<div style="font-size:10px;color:#999;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+_escapeHtml(p.notas)+'</div>':'') +
       '<div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap">' +
       '<button onclick="window._segEditarProspecto(\''+p.id+'\')" style="flex:1;font-size:10px;padding:3px 6px;background:'+est.bg+';color:'+est.color+';border:1px solid '+est.color+';border-radius:5px;cursor:pointer">✏️ Editar</button>' +
       '<button onclick="window._segMoverProspecto(\''+p.id+'\')" style="flex:1;font-size:10px;padding:3px 6px;background:#f5f5f5;color:#555;border:1px solid #ddd;border-radius:5px;cursor:pointer">→ Mover</button>' +
@@ -889,7 +1060,7 @@ function tgEnviar(mensaje) {
           t.charAt(0).toUpperCase() + t.slice(1) + '</option>';
       }).join('') + '</select>' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Título *</label>' +
-      '<input id="segEvTitulo" type="text" value="' + (e ? (e.titulo || '') : '') + '" placeholder="Ej: Reunión con Juan Pérez"' +
+      '<input id="segEvTitulo" type="text" value="' + (e ? _escapeHtml(e.titulo || '') : '') + '" placeholder="Ej: Reunión con Juan Pérez"' +
       ' style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha y hora *</label>' +
       '<input id="segEvFecha" type="datetime-local" value="' + fechaVal + '"' +
@@ -915,9 +1086,9 @@ function tgEnviar(mensaje) {
       }).join('') + '</select>' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Descripción</label>' +
       '<textarea id="segEvDesc" rows="2" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box;resize:vertical">' +
-      (e ? (e.descripcion || '') : '') + '</textarea>' +
+      (e ? _escapeHtml(e.descripcion || '') : '') + '</textarea>' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Relacionado (lote ID o nombre)</label>' +
-      '<input id="segEvRel" type="text" value="' + (e ? (e.relacionado || '') : '') + '" placeholder="Ej: B02 o Juan Pérez"' +
+      '<input id="segEvRel" type="text" value="' + (e ? _escapeHtml(e.relacionado || '') : '') + '" placeholder="Ej: B02 o Juan Pérez"' +
       ' style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box">';
 
     _abrirModal((esEdicion ? '✏️ Editar evento' : '📅 Nuevo evento'), body, function () {
@@ -953,6 +1124,11 @@ function tgEnviar(mensaje) {
         if (esEdicion) {
           var idx = _eventos.findIndex(function(x) { return x.id === e.id; });
           if (idx >= 0) _eventos[idx] = Object.assign(_eventos[idx], datos);
+          /* Actualizar también en resultados de búsqueda si aplica */
+          if (_resultadosBusq !== null) {
+            var idxB = _resultadosBusq.findIndex(function(x){ return x.id === e.id; });
+            if (idxB >= 0) _resultadosBusq[idxB] = Object.assign(_resultadosBusq[idxB], datos);
+          }
         } else {
           if (Array.isArray(res)) _eventos = _eventos.concat(res);
         }
@@ -1012,10 +1188,6 @@ function tgEnviar(mensaje) {
   /* ══════════════════════════════════════════════════════════
      ACCIONES — PAGOS
   ══════════════════════════════════════════════════════════ */
-
-  /* ── NUEVO: Registrar pago / abono ────────────────────────
-     - Si el monto ingresado cubre el total → pagado: true
-     - Si es parcial → acumula en `abonado`, pagado: false      */
   window._segRegistrarPago = function(pagoId) {
     var pago = _pagos.find(function(p){ return p.id === pagoId; });
     if (!pago) return;
@@ -1024,21 +1196,16 @@ function tgEnviar(mensaje) {
     var restante = Math.max(0, monto - abonado);
 
     var body =
-      /* Resumen del estado actual si ya hay abonos */
       (abonado > 0
         ? '<div style="background:#f3e5f5;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#6a1b9a">' +
           '💜 Ya abonado: <b>' + fmtMonto(abonado) + '</b> de ' + fmtMonto(monto) +
           ' &nbsp;·&nbsp; Restante: <b>' + fmtMonto(restante) + '</b></div>'
         : '') +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto a pagar ahora *</label>' +
       '<input id="segPagoMonto" type="number" step="0.0001" value="' + restante + '" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
       '<div id="segPagoMontoPreview" style="font-size:11px;color:#888;margin-bottom:12px"></div>' +
-
-      /* Indicador dinámico de si será pago completo o abono */
       '<div id="segPagoTipoLabel" style="font-size:12px;font-weight:700;padding:8px 12px;border-radius:8px;margin-bottom:12px;background:#e3f2fd;color:#1565c0">🔵 Cargando…</div>' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de pago</label>' +
       '<input id="segPagoFecha" type="date" value="' + hoy() + '" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
@@ -1067,7 +1234,6 @@ function tgEnviar(mensaje) {
       if (esPagoTotal) {
         datosUpdate.pagado     = true;
         datosUpdate.fecha_pago = fechaPago;
-        // Al completar la cuota, resetear abonado al monto exacto (limpieza)
         datosUpdate.abonado    = monto;
       }
 
@@ -1077,7 +1243,6 @@ function tgEnviar(mensaje) {
         _cerrarModal(); _renderVista(); _actualizarCampanita();
 
         if (esPagoTotal) {
-          /* Pequeña notificación de éxito */
           if ('Notification' in window && Notification.permission === 'granted') {
             var lote = window.S && window.S.lots
               ? window.S.lots.find(function(l){ return l.id === pago.lot_id; })
@@ -1091,7 +1256,6 @@ function tgEnviar(mensaje) {
       }).catch(function(e){ alert('Error: ' + e.message); });
     });
 
-    /* Lógica dinámica del indicador */
     setTimeout(function() {
       var inp   = document.getElementById('segPagoMonto');
       var prev  = document.getElementById('segPagoMontoPreview');
@@ -1134,13 +1298,10 @@ function tgEnviar(mensaje) {
     });
   };
 
-  /* ── NUEVO: Editar cuota + cascada automática ─────────────── */
   window._segEditarCuota = function(pagoId) {
     var pago = _pagos.find(function(p){ return p.id === pagoId; });
     if (!pago) return;
-    var esCuota1 = pago.num_cuota === 1;
 
-    /* Cuántas cuotas sin pagar hay después de esta */
     var cuotasLote = _pagos.filter(function(p){
       return p.lot_id === pago.lot_id && p.num_cuota > pago.num_cuota && !p.pagado;
     });
@@ -1154,8 +1315,6 @@ function tgEnviar(mensaje) {
       '<input id="segCuotaMonto" type="number" step="0.0001" value="' + (pago.monto || '') + '" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
       '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCuotaMontoPreview"></div>' +
-
-      /* ── NUEVO: opción de cascada ── */
       (hayFuturas
         ? '<div style="background:#e3f2fd;border-radius:8px;padding:10px 12px;margin-bottom:4px">' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;color:#1565c0">' +
@@ -1177,7 +1336,6 @@ function tgEnviar(mensaje) {
       if (!nuevaFecha) { alert('La fecha es obligatoria.'); return; }
       if (isNaN(nuevoMonto) || nuevoMonto <= 0) { alert('Ingresa un monto válido.'); return; }
 
-      // 1. Actualizar esta cuota en BD
       sbUpdate('pagos', pagoId, { fecha_vence: nuevaFecha, monto: nuevoMonto, notificado: false })
         .then(function() {
           var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
@@ -1186,8 +1344,6 @@ function tgEnviar(mensaje) {
             _pagos[idx].monto       = nuevoMonto;
             _pagos[idx].notificado  = false;
           }
-
-          // 2. Si el usuario marcó cascada, recalcular las siguientes
           if (aplicarCasc) {
             return _aplicarCascadaFechas(pago.lot_id, pago.num_cuota, nuevaFecha);
           }
@@ -1208,7 +1364,7 @@ function tgEnviar(mensaje) {
   };
 
   /* ══════════════════════════════════════════════════════════
-     ACCIONES — CUOTA INICIAL (sin cambios)
+     ACCIONES — CUOTA INICIAL
   ══════════════════════════════════════════════════════════ */
   window._segEditarCuotaInicial = function(loteId) {
     var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id===loteId; }) : null;
@@ -1310,7 +1466,7 @@ function tgEnviar(mensaje) {
       _vendedores.map(function(v){ return '<option value="' + v.id + '"' + (d.vendedor_id === v.id ? ' selected' : '') + '>' + v.nombre + '</option>'; }).join('');
     var body =
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Nombre completo *</label>' +
-      '<input id="segPrNombre" type="text" value="' + (d.nombre || '') + '" placeholder="Ej: Carlos Ramírez" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
+      '<input id="segPrNombre" type="text" value="' + _escapeHtml(d.nombre || '') + '" placeholder="Ej: Carlos Ramírez" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Teléfono</label>' +
       '<input id="segPrTel" type="tel" value="' + (d.telefono || '') + '" placeholder="Ej: 3001234567" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Estado</label>' +
@@ -1321,7 +1477,7 @@ function tgEnviar(mensaje) {
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Próximo seguimiento</label>' +
       '<input id="segPrFollow" type="date" value="' + (d.next_follow || '') + '" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Notas</label>' +
-      '<textarea id="segPrNotas" rows="3" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box;resize:vertical">' + (d.notas || '') + '</textarea>';
+      '<textarea id="segPrNotas" rows="3" style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:0;box-sizing:border-box;resize:vertical">' + _escapeHtml(d.notas || '') + '</textarea>';
     _abrirModal((d.id ? '✏️ Editar prospecto' : '👥 Nuevo prospecto'), body, function() {
       var nombre = (document.getElementById('segPrNombre').value || '').trim();
       if (!nombre) { alert('El nombre es obligatorio.'); return; }
@@ -1365,7 +1521,7 @@ function tgEnviar(mensaje) {
   window._segMoverProspecto = function(id) {
     var p = _prospectos.find(function(x){ return x.id === id; });
     if (!p) return;
-    var body = '<div style="font-size:13px;margin-bottom:14px;color:#555">Mover <b>' + p.nombre + '</b> a:</div>' +
+    var body = '<div style="font-size:13px;margin-bottom:14px;color:#555">Mover <b>' + _escapeHtml(p.nombre) + '</b> a:</div>' +
       '<div style="display:flex;flex-direction:column;gap:8px">' +
       ESTADOS.map(function(est) {
         var esActual = est.id === p.estado;
@@ -1407,7 +1563,7 @@ function tgEnviar(mensaje) {
   window._segGestionarVendedores = function() {
     var lista = _vendedores.map(function(v) {
       return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:8px;background:#f5f5f5;margin-bottom:6px">' +
-        '<span style="font-size:13px;font-weight:600">👤 ' + v.nombre + '</span>' +
+        '<span style="font-size:13px;font-weight:600">👤 ' + _escapeHtml(v.nombre) + '</span>' +
         '<button onclick="window._segEliminarVendedor(\'' + v.id + '\')" style="background:none;border:none;cursor:pointer;color:#c62828;font-size:13px">🗑</button>' +
         '</div>';
     }).join('') || '<div style="font-size:12px;color:#999;text-align:center;padding:10px">Sin vendedores registrados</div>';
@@ -1450,6 +1606,10 @@ function tgEnviar(mensaje) {
     sbUpdate('eventos', id, { completado: true }).then(function() {
       var idx = _eventos.findIndex(function(e) { return e.id === id; });
       if (idx >= 0) _eventos[idx].completado = true;
+      if (_resultadosBusq !== null) {
+        var idxB = _resultadosBusq.findIndex(function(e){ return e.id === id; });
+        if (idxB >= 0) _resultadosBusq[idxB].completado = true;
+      }
       _renderVista(); _actualizarCampanita();
     }).catch(function(e) { alert('Error: ' + e.message); });
   };
@@ -1458,6 +1618,10 @@ function tgEnviar(mensaje) {
     sbUpdate('eventos', id, { completado: false }).then(function() {
       var idx = _eventos.findIndex(function(e) { return e.id === id; });
       if (idx >= 0) _eventos[idx].completado = false;
+      if (_resultadosBusq !== null) {
+        var idxB = _resultadosBusq.findIndex(function(e){ return e.id === id; });
+        if (idxB >= 0) _resultadosBusq[idxB].completado = false;
+      }
       _renderVista(); _actualizarCampanita();
     }).catch(function(e) { alert('Error: ' + e.message); });
   };
@@ -1467,6 +1631,9 @@ function tgEnviar(mensaje) {
     if (!confirm('\u00BFEliminar el evento "' + (ev ? ev.titulo : '') + '"? Esta acci\u00F3n no se puede deshacer.')) return;
     sbDelete('eventos', id).then(function() {
       _eventos = _eventos.filter(function(e) { return e.id !== id; });
+      if (_resultadosBusq !== null) {
+        _resultadosBusq = _resultadosBusq.filter(function(e){ return e.id !== id; });
+      }
       _renderVista(); _actualizarCampanita();
     }).catch(function(e) { alert('Error al eliminar: ' + e.message); });
   };
