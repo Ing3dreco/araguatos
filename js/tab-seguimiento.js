@@ -523,7 +523,7 @@ function tgEnviar(mensaje) {
       'box-shadow:0 1px 4px rgba(0,0,0,.06)">' +
       '<span style="font-size:15px;color:#888">🔍</span>' +
       '<input id="segBusqEvento" type="text" value="'+_escapeHtml(busqVal)+'" ' +
-      'placeholder="Buscar evento por título (sensible a Mayúsculas/minúsculas)…" ' +
+      'placeholder="Buscar evento por título…" ' +
       'style="flex:1;border:none;outline:none;font-size:13px;background:transparent;color:#333" ' +
       'oninput="window._segBuscarEvento(this.value)">' +
       (busqVal
