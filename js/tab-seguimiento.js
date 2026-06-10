@@ -70,6 +70,12 @@ function tgEnviar(mensaje) {
            'T' + _pad(d.getHours()) + ':' + _pad(d.getMinutes());
   }
   function _pad(n)  { return n < 10 ? '0' + n : '' + n; }
+  function _normalizar(str) {
+  return String(str || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
   function _padFecha(y, m, d) { return y + '-' + _pad(m) + '-' + _pad(d); }
 
   function isoFecha(d) {
@@ -585,9 +591,10 @@ function tgEnviar(mensaje) {
       return;
     }
     var termino = valor.trim();
+    var terminoNorm = _normalizar(termino);
     var resultados = _eventos.filter(function(e) {
-      return (e.titulo || '').indexOf(termino) !== -1;
-    });
+    return _normalizar(e.titulo).indexOf(terminoNorm) !== -1;
+});
     _resultadosBusq = resultados;
     _renderVista();
   };
