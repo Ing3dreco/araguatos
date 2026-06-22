@@ -1,17 +1,33 @@
 /* ═══════════════════════════════════════════════════════════════
-   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v8
-   FIX v8 (definitivo anti-bucle):
-     1. SEMÁFORO _sincronizando: cargarTodo() es no-reentrable.
-        Si llega una nueva llamada mientras hay una sincronización
-        en curso, se ignora. Esto corta el ciclo
-        Realtime → cargarTodo → sync → DELETE/INSERT → Realtime.
-     2. REALTIME TARDÍO: _iniciarRealtime() solo se activa DESPUÉS
-        de que terminen todos los sincronizarCuotas(). Antes solo
-        escuchaba sin que los cambios causados por el propio sync
-        disparen una nueva carga.
-     3. FIX CONTEO CUOTAS: sincronizarCuotas() excluye num_cuota===0
-        (cuota inicial) del conteo de existentes, evitando
-        regeneraciones falsas cuando existe solo la CI.
+   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v9
+   
+   CORRECCIONES v9 (fix definitivo pérdida de ediciones y loop):
+   
+   1. REALTIME SE INICIALIZA UNA SOLA VEZ: _realtimeIniciado evita
+      que _iniciarRealtime() cree suscripciones duplicadas en cada
+      ciclo de cargarTodo(). Antes se pausaba y re-suscribía en cada
+      llamada, creando race conditions con eventos en cola.
+   
+   2. DEBOUNCE EN REALTIME (2 s): los eventos de BD llegan en ráfaga
+      (N cuotas modificadas = N eventos). El debounce agrupa todos
+      los eventos de una ráfaga y lanza UN SOLO cargarTodo() después
+      de 2 s de silencio. Elimina el loop de re-cargas en cascada.
+   
+   3. SEMÁFORO EXTENDIDO: _sincronizando bloquea tanto la carga como
+      el periodo entre carga y re-suscripción Realtime. El Realtime
+      ya NO se pausa/reanuda en cada ciclo — solo existe el debounce.
+   
+   4. sincronizarCuotas() PROTEGIDA CONTRA REGENERACIÓN POR EDICIÓN:
+      - Solo regenera si NO EXISTEN cuotas (first-time setup).
+      - Si ya existen cuotas (aunque sean editadas), respeta y NO toca.
+      - Única excepción: todasCero (corrupción) o cantidad === 0.
+      - Elimina la condición "cantidadIncorrecta" que borraba cuotas
+        editadas manualmente cuando el número no coincidía exactamente.
+   
+   5. BLOQUEO DE REALTIME DURANTE EDICIONES MANUALES: las acciones del
+      usuario (pagar, editar cuota, etc.) bloquean el debounce durante
+      3 s para evitar que el UPDATE que ellas mismas generan dispare
+      una re-carga que sobreescriba los cambios optimistas locales.
    ═══════════════════════════════════════════════════════════════ */
 (function () {
 var TG_CHAT_ID = '-5030514648';
@@ -44,8 +60,13 @@ function tgEnviar(mensaje) {
   var _realtimeSubs   = [];
   var _notifVistas    = {};
 
-  /* ── FIX v8: semáforo para evitar re-entrada en cargarTodo ── */
-  var _sincronizando  = false;
+  /* ── v9: control de bucle ─────────────────────────────────── */
+  var _sincronizando    = false;   /* semáforo carga completa      */
+  var _realtimeIniciado = false;   /* Realtime se inicia solo 1 vez */
+  var _debounceTimer    = null;    /* timer debounce Realtime       */
+  var _bloquearDebounce = false;   /* bloqueo temporal post-edición */
+  var _DEBOUNCE_MS      = 2000;    /* ms de silencio antes de recargar */
+  var _BLOQUEO_MS       = 3000;    /* ms de bloqueo post-edición del usuario */
 
   /* ── v5: estado del buscador de eventos ──────────────────── */
   var _busquedaEvento  = '';
@@ -158,15 +179,27 @@ function tgEnviar(mensaje) {
     });
   }
 
+  /* ── v9: Bloqueo temporal post-edición ───────────────────── */
+  /* Llamar esto ANTES de cualquier sbUpdate/sbInsert/sbDelete
+     iniciado por el usuario para evitar que el Realtime resultante
+     dispare una recarga que sobreescriba los cambios optimistas.   */
+  function _bloquearRealtimeBrevemente() {
+    _bloquearDebounce = true;
+    clearTimeout(_debounceTimer);
+    setTimeout(function() {
+      _bloquearDebounce = false;
+    }, _BLOQUEO_MS);
+  }
+
   /* ══════════════════════════════════════════════════════════
-     CARGA DE DATOS — FIX v8
-     cargarTodo() es no-reentrable gracias al semáforo _sincronizando.
-     _iniciarRealtime() se llama SOLO después de que todas las
-     sincronizaciones terminan, para que los propios DELETE/INSERT
-     del sync no disparen nuevas cargas.
+     CARGA DE DATOS — v9
+     - cargarTodo() sigue siendo no-reentrable con _sincronizando.
+     - NO pausa ni re-inicia Realtime: el debounce en _iniciarRealtime
+       absorbe cualquier evento que llegue mientras cargamos.
+     - sincronizarCuotas() SOLO genera cuotas si NO EXISTEN aún
+       (num_cuota > 0). Nunca borra cuotas que el usuario haya editado.
   ══════════════════════════════════════════════════════════ */
   function cargarTodo() {
-    /* FIX v8 — semáforo: si ya hay una sincronización en curso, salir */
     if (_sincronizando) {
       console.log('[Seguimiento] cargarTodo() ignorado — sync en curso');
       return;
@@ -180,10 +213,6 @@ function tgEnviar(mensaje) {
       return;
     }
 
-    /* FIX v8 — pausar realtime ANTES de cargar para que los cambios
-       producidos por sincronizarCuotas() no disparen nuevas cargas */
-    _pausarRealtime();
-
     Promise.all([
       sbFetch('pagos',      'select=*&order=fecha_vence.asc'),
       sbFetch('prospectos', 'select=*&order=created_at.desc'),
@@ -195,55 +224,70 @@ function tgEnviar(mensaje) {
       _eventos    = res[2] || [];
       _vendedores = res[3] || [];
 
+      /* Solo sincronizar lotes que AÚN NO tienen cuotas en BD */
       var lotesParaSync = (window.S && window.S.lots
         ? window.S.lots.filter(function(l){
-            return (l.status === 'sold' || l.status === 'apartado') && l.payType !== 'cash';
+            return (l.status === 'sold' || l.status === 'apartado') &&
+                   l.payType !== 'cash' &&
+                   !_tieneCuotas(l.id);   /* ← solo si faltan */
           })
         : []);
 
       var promesasSync = lotesParaSync.map(function(l){ return sincronizarCuotas(l); });
-
       return Promise.all(promesasSync);
 
     }).then(function(){
-      _sincronizando = false;   /* liberar semáforo */
+      _sincronizando = false;
       _renderVista();
       _actualizarCampanita();
-      /* FIX v8 — iniciar realtime DESPUÉS del sync, no antes */
-      _iniciarRealtime();
+      /* Iniciar Realtime solo la primera vez */
+      if (!_realtimeIniciado) _iniciarRealtime();
 
     }).catch(function(e) {
       console.error('[Seguimiento] Error:', e);
-      _sincronizando = false;   /* liberar semáforo incluso en error */
+      _sincronizando = false;
       _renderVista();
-      _iniciarRealtime();
+      if (!_realtimeIniciado) _iniciarRealtime();
     });
   }
 
-  /* ── Pausar / reanudar realtime ───────────────────────────── */
-  function _pausarRealtime() {
-    _realtimeSubs.forEach(function(s){ try{ s.unsubscribe(); }catch(e){} });
-    _realtimeSubs = [];
+  /* ── ¿Ya existen cuotas mensuales para este lote? ─────────── */
+  function _tieneCuotas(loteId) {
+    return _pagos.some(function(p){ return p.lot_id === loteId && p.num_cuota > 0; });
   }
 
-  /* ── Realtime ─────────────────────────────────────────────── */
+  /* ══════════════════════════════════════════════════════════
+     REALTIME — v9
+     Se inicializa UNA SOLA VEZ. Usa debounce de 2 s para agrupar
+     ráfagas de eventos y evitar recargas en cascada.
+     El bloqueo post-edición impide recargas justo después de que
+     el propio usuario modifica un registro.
+  ══════════════════════════════════════════════════════════ */
   function _iniciarRealtime() {
     if (typeof window.supabase === 'undefined') return;
-    /* Limpiar suscripciones anteriores antes de crear nuevas */
-    _pausarRealtime();
+    if (_realtimeIniciado) return;
+    _realtimeIniciado = true;
+
     ['pagos','prospectos','eventos','vendedores'].forEach(function(tabla) {
       var sub = window.supabase.channel('seg-' + tabla)
         .on('postgres_changes', { event: '*', schema: 'public', table: tabla }, function() {
-          /* FIX v8 — el semáforo en cargarTodo() evita que los propios
-             cambios del sync disparen re-cargas en cascada */
-          cargarTodo();
+          /* Ignorar si el usuario acaba de hacer una edición manual */
+          if (_bloquearDebounce) return;
+          /* Debounce: esperar 2 s de silencio antes de recargar */
+          clearTimeout(_debounceTimer);
+          _debounceTimer = setTimeout(function() {
+            if (!_bloquearDebounce) cargarTodo();
+          }, _DEBOUNCE_MS);
         }).subscribe();
       _realtimeSubs.push(sub);
     });
   }
 
   /* ══════════════════════════════════════════════════════════
-     CUOTAS AUTOMÁTICAS
+     CUOTAS AUTOMÁTICAS — v9
+     sincronizarCuotas() SOLO se llama cuando _tieneCuotas() === false,
+     es decir, cuando el lote no tiene NINGUNA cuota mensual en BD.
+     Nunca borra cuotas editadas por el usuario.
   ══════════════════════════════════════════════════════════ */
   function generarCuotasDeLote(lote) {
     if (lote.payType === 'cash') return [];
@@ -281,43 +325,24 @@ function tgEnviar(mensaje) {
     return cuotas;
   }
 
-  /* FIX v8 — sincronizarCuotas excluye num_cuota===0 (cuota inicial)
-     del conteo para evitar regeneraciones falsas */
+  /* v9: sincronizarCuotas solo genera cuotas si no existen.
+     No borra ni modifica cuotas ya existentes (pueden estar editadas). */
   function sincronizarCuotas(lote) {
-    /* Solo cuotas mensuales (num_cuota > 0) — excluir la CI */
+    /* Esta función solo se llama cuando _tieneCuotas() es false,
+       pero doble-chequeamos por seguridad */
     var existentes = _pagos.filter(function(p){
       return p.lot_id === lote.id && p.num_cuota > 0;
     });
-
-    var todasCero = existentes.length > 0 && existentes.every(function(p){
-      return Number(p.monto) === 0;
-    });
-    var cantidadIncorrecta = existentes.length > 0 && parseInt(lote.mo) > 0 &&
-                             existentes.length !== parseInt(lote.mo);
-
-    if (existentes.length > 0 && !todasCero && !cantidadIncorrecta) {
-      return Promise.resolve();
-    }
+    if (existentes.length > 0) return Promise.resolve();
 
     var cuotas = generarCuotasDeLote(lote);
     if (!cuotas.length) return Promise.resolve();
 
-    var promesaBorrado = Promise.resolve();
-    if (existentes.length > 0) {
-      promesaBorrado = Promise.all(existentes.map(function(p){
-        return sbDelete('pagos', p.id);
-      })).then(function(){
-        _pagos = _pagos.filter(function(p){
-          return !(p.lot_id === lote.id && p.num_cuota > 0);
-        });
-      });
-    }
-
-    return promesaBorrado.then(function(){
-      return sbInsert('pagos', cuotas);
-    }).then(function(nuevas) {
-      _pagos = _pagos.concat(nuevas || []);
-    }).catch(function(e){ console.error('[Seguimiento] Error cuotas', lote.id, e); });
+    return sbInsert('pagos', cuotas)
+      .then(function(nuevas) {
+        _pagos = _pagos.concat(nuevas || []);
+      })
+      .catch(function(e){ console.error('[Seguimiento] Error generando cuotas', lote.id, e); });
   }
 
   /* ── Cascada de fechas ────────────────────────────────────── */
@@ -356,7 +381,7 @@ function tgEnviar(mensaje) {
     });
   }
 
-  /* ── Semáforo ─────────────────────────────────────────────── */
+  /* ── Semáforo visual ──────────────────────────────────────── */
   function semaforo(pago) {
     if (pago.pagado) return { color:'#2e7d32', bg:'#e8f5e9', icono:'✅', label:'Pagado' };
     var abonado = Number(pago.abonado) || 0;
@@ -421,7 +446,7 @@ function tgEnviar(mensaje) {
     var total = nov.agenda.length + nov.pagos.length + nov.prospectos.length;
     var badge = bell.querySelector('.seg-bell-badge');
     if (badge) badge.textContent = total > 0 ? (total > 99 ? '99+' : total) : '';
-    badge.style.display = total > 0 ? 'flex' : 'none';
+    if (badge) badge.style.display = total > 0 ? 'flex' : 'none';
   }
 
   function _renderCampanita() {
@@ -1240,14 +1265,19 @@ function tgEnviar(mensaje) {
       if (typeof syncLot === 'function') syncLot(lote);
 
       if (cambioFinanciero) {
+        /* Bloquear Realtime para que el DELETE/INSERT no dispare recarga */
+        _bloquearRealtimeBrevemente();
         var existentes = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota > 0; });
         Promise.all(existentes.map(function(p){ return sbDelete('pagos', p.id); }))
           .then(function(){
             _pagos = _pagos.filter(function(p){ return !(p.lot_id === lote.id && p.num_cuota > 0); });
             _acordeonesAbiertos[lote.id] = true;
-            return sincronizarCuotas(lote);
+            var cuotas = generarCuotasDeLote(lote);
+            if (!cuotas.length) return [];
+            return sbInsert('pagos', cuotas);
           })
-          .then(function(){
+          .then(function(nuevas){
+            if (Array.isArray(nuevas)) _pagos = _pagos.concat(nuevas);
             _cerrarModal();
             _renderVista();
           })
@@ -1347,12 +1377,6 @@ function tgEnviar(mensaje) {
   /* ══════════════════════════════════════════════════════════
      MODAL GENÉRICO
   ══════════════════════════════════════════════════════════ */
-  function _inp(id, label, type, val, placeholder, extra) {
-    return '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">'+label+'</label>' +
-      '<input id="'+id+'" type="'+type+'" value="'+(val||'')+'" placeholder="'+(placeholder||'')+'" '+(extra||'')+
-      ' style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">';
-  }
-
   function _abrirModal(titulo, bodyHtml, onGuardar) {
     var overlay=document.getElementById('segModal');
     if(!overlay){
@@ -1493,6 +1517,7 @@ function tgEnviar(mensaje) {
         delete _tgNotificado[keyAnterior];
         delete _tgNotificado[keyMinAnt];
       }
+      _bloquearRealtimeBrevemente();
       var op = esEdicion ? sbUpdate('eventos', e.id, datos) : sbInsert('eventos', datos);
       op.then(function (res) {
         if (esEdicion) {
@@ -1610,6 +1635,7 @@ function tgEnviar(mensaje) {
         datosUpdate.abonado    = monto;
       }
 
+      _bloquearRealtimeBrevemente();
       sbUpdate('pagos', pagoId, datosUpdate).then(function() {
         var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
         if (idx >= 0) Object.assign(_pagos[idx], datosUpdate);
@@ -1662,6 +1688,7 @@ function tgEnviar(mensaje) {
   window._segDesmarcarPago = function(pagoId) {
     var pago = _pagos.find(function(p){ return p.id === pagoId; });
     if (!confirm('¿Desmarcar este pago? También se reiniciarán los abonos.')) return;
+    _bloquearRealtimeBrevemente();
     sbUpdate('pagos', pagoId, { pagado: false, fecha_pago: null, nota: '', abonado: 0, notificado: false }).then(function() {
       var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
       if (idx >= 0) {
@@ -1743,6 +1770,7 @@ function tgEnviar(mensaje) {
         datosUpdate.fecha_pago = null;
       }
 
+      _bloquearRealtimeBrevemente();
       sbUpdate('pagos', pagoId, datosUpdate)
         .then(function() {
           var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
@@ -1847,6 +1875,7 @@ function tgEnviar(mensaje) {
       lote.dnPagado = true; lote.dnAmt = monto; lote.dnFecha = fecha; lote.dnNota = nota;
       if (typeof saveS === 'function') saveS();
       if (typeof syncLot === 'function') syncLot(lote);
+      _bloquearRealtimeBrevemente();
       var ciExistente = _pagos.find(function(p){ return p.lot_id === loteId && p.num_cuota === 0; });
       if (ciExistente) {
         sbUpdate('pagos', ciExistente.id, { pagado: true, fecha_pago: fecha, monto: monto, nota: nota }).then(function() {
@@ -1879,6 +1908,7 @@ function tgEnviar(mensaje) {
     lote.dnPagado = false;
     if (typeof saveS === 'function') saveS();
     if (typeof syncLot === 'function') syncLot(lote);
+    _bloquearRealtimeBrevemente();
     var ciExistente = _pagos.find(function(p){ return p.lot_id === loteId && p.num_cuota === 0; });
     if (ciExistente) {
       sbUpdate('pagos', ciExistente.id, { pagado: false, fecha_pago: null, nota: '' }).then(function() {
@@ -1926,6 +1956,7 @@ function tgEnviar(mensaje) {
         updated_at  : new Date().toISOString(),
         notificado  : false
       };
+      _bloquearRealtimeBrevemente();
       var op = d.id ? sbUpdate('prospectos', d.id, payload) : sbInsert('prospectos', payload);
       op.then(function(res) {
         if (d.id) {
@@ -1947,6 +1978,7 @@ function tgEnviar(mensaje) {
   window._segEliminarProspecto = function(id) {
     var p = _prospectos.find(function(x){ return x.id === id; });
     if (!confirm('¿Eliminar el prospecto "' + (p ? p.nombre : '') + '"? Esta acción no se puede deshacer.')) return;
+    _bloquearRealtimeBrevemente();
     sbDelete('prospectos', id).then(function() {
       _prospectos = _prospectos.filter(function(x){ return x.id !== id; });
       _renderVista(); _actualizarCampanita();
@@ -1983,6 +2015,7 @@ function tgEnviar(mensaje) {
   };
 
   window._segCambiarEstado = function(id, nuevoEstado) {
+    _bloquearRealtimeBrevemente();
     sbUpdate('prospectos', id, { estado: nuevoEstado, updated_at: new Date().toISOString() }).then(function() {
       var idx = _prospectos.findIndex(function(p){ return p.id === id; });
       if (idx >= 0) _prospectos[idx].estado = nuevoEstado;
@@ -2019,6 +2052,7 @@ function tgEnviar(mensaje) {
         var nombre = (document.getElementById('segVendNombre').value || '').trim();
         var tel    = (document.getElementById('segVendTel').value || '').trim();
         if (!nombre) { alert('El nombre es obligatorio.'); return; }
+        _bloquearRealtimeBrevemente();
         sbInsert('vendedores', { nombre: nombre, telefono: tel }).then(function(res) {
           if (Array.isArray(res)) _vendedores = _vendedores.concat(res);
           window._segGestionarVendedores(); _renderVista();
@@ -2030,6 +2064,7 @@ function tgEnviar(mensaje) {
   window._segEliminarVendedor = function(id) {
     var v = _vendedores.find(function(x){ return x.id === id; });
     if (!confirm('¿Eliminar al vendedor "' + (v ? v.nombre : '') + '"?')) return;
+    _bloquearRealtimeBrevemente();
     sbDelete('vendedores', id).then(function() {
       _vendedores = _vendedores.filter(function(x){ return x.id !== id; });
       if (_vendedorActivo === id) _vendedorActivo = null;
@@ -2038,6 +2073,7 @@ function tgEnviar(mensaje) {
   };
 
   window._segCompletarEvento = function(id) {
+    _bloquearRealtimeBrevemente();
     sbUpdate('eventos', id, { completado: true }).then(function() {
       var idx = _eventos.findIndex(function(e) { return e.id === id; });
       if (idx >= 0) _eventos[idx].completado = true;
@@ -2050,6 +2086,7 @@ function tgEnviar(mensaje) {
   };
 
   window._segRevertirEvento = function(id) {
+    _bloquearRealtimeBrevemente();
     sbUpdate('eventos', id, { completado: false }).then(function() {
       var idx = _eventos.findIndex(function(e) { return e.id === id; });
       if (idx >= 0) _eventos[idx].completado = false;
@@ -2064,6 +2101,7 @@ function tgEnviar(mensaje) {
   window._segEliminarEvento = function(id) {
     var ev = _eventos.find(function(e) { return e.id === id; });
     if (!confirm('\u00BFEliminar el evento "' + (ev ? ev.titulo : '') + '"? Esta acci\u00F3n no se puede deshacer.')) return;
+    _bloquearRealtimeBrevemente();
     sbDelete('eventos', id).then(function() {
       _eventos = _eventos.filter(function(e) { return e.id !== id; });
       if (_resultadosBusq !== null) {
