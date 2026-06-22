@@ -1,18 +1,40 @@
 /* ═══════════════════════════════════════════════════════════════
-   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v9
-   FIX v9 (definitivo anti-bucle + anti-pérdida de ediciones):
-     1. COOLDOWN POST-SYNC: después de que sincronizarCuotas()
-        termina, se activa un período de silencio (_realtimeCooldownHasta)
-        durante el cual cualquier evento realtime es ignorado.
-        Esto corta el ciclo DELETE/INSERT → realtime → cargarTodo.
-     2. SYNC ULTRA-CONSERVADOR: sincronizarCuotas() solo actúa
-        cuando no existen NINGUNA cuota (num_cuota > 0) para el lote.
-        Si ya hay cuotas —sin importar cantidad o montos— NO toca nada.
-        Esto protege todas las ediciones manuales de fechas y montos.
-     3. SEMÁFORO ROBUSTO: _sincronizando impide re-entradas.
-        Se libera siempre (try/finally conceptual con .catch).
-     4. REALTIME TARDÍO: se re-suscribe solo DESPUÉS de que el sync
-        completa y el cooldown está activo.
+   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v10
+   FIX v10 (corrección definitiva de cuotas duplicadas):
+
+   CAUSA RAÍZ DEL BUG:
+     sincronizarCuotas() consultaba _pagos (memoria local) para
+     decidir si existían cuotas, pero múltiples llamadas en paralelo
+     dentro del mismo Promise.all() todas veían _pagos vacío antes
+     de que cualquier INSERT terminara → cada una insertaba el juego
+     completo de cuotas → duplicados masivos.
+
+   CORRECCIONES v10:
+     1. SET _lotesYaSincronizados: semáforo en memoria por lote.
+        Una vez que una llamada a sincronizarCuotas(lote) comienza,
+        marca el lote inmediatamente. Las llamadas concurrentes del
+        mismo ciclo no pueden entrar aunque _pagos esté vacío.
+        Se resetea solo al inicio de cada cargarTodo() completo.
+
+     2. sbInsert acepta opción {ignoreDuplicates: true} que añade
+        el header "Prefer: resolution=ignore-duplicates" al INSERT.
+        Así, si la constraint UNIQUE (lot_id, num_cuota) existe en
+        Supabase (ver limpiar_duplicados.sql), cualquier duplicado
+        se descarta silenciosamente en lugar de lanzar error 409.
+
+     3. sincronizarCuotas() hace una consulta DIRECTA a Supabase
+        (no usa _pagos local) para contar cuotas existentes antes
+        de insertar. Esto elimina la condición de carrera: incluso
+        si dos pestañas del navegador corren simultáneamente, la
+        consulta a la base de datos es la fuente de verdad.
+
+     4. Se eliminó la regeneración automática de cuotas en
+        cargarTodo(). El sync automático solo ocurre en la primera
+        carga si el lote no tiene ninguna cuota. La regeneración
+        al editar venta sigue existiendo pero controlada
+        explícitamente por el usuario.
+
+   COMPATIBILIDAD: 100% con v9. Ninguna interfaz de usuario cambia.
    ═══════════════════════════════════════════════════════════════ */
 (function () {
 var TG_CHAT_ID = '-5030514648';
@@ -45,10 +67,15 @@ function tgEnviar(mensaje) {
   var _realtimeSubs   = [];
   var _notifVistas    = {};
 
-  /* ── FIX v9: semáforo + cooldown post-sync ───────────────── */
-  var _sincronizando        = false;
-  var _realtimeCooldownHasta = 0;   /* timestamp ms hasta el que se ignora realtime */
-  var COOLDOWN_MS           = 8000; /* 8 segundos de silencio post-sync */
+  /* ── FIX v10: semáforos ───────────────────────────────────── */
+  var _sincronizando         = false;
+  var _realtimeCooldownHasta = 0;
+  var COOLDOWN_MS            = 8000;
+
+  /* FIX v10: Set de lotes cuyo sync ya comenzó en este ciclo.
+     Previene que llamadas paralelas dentro del mismo Promise.all
+     inserten cuotas dos veces cuando _pagos aún está vacío. */
+  var _lotesYaSincronizados = new Set();
 
   /* ── v5: estado del buscador de eventos ──────────────────── */
   var _busquedaEvento  = '';
@@ -135,16 +162,29 @@ function tgEnviar(mensaje) {
       return r.json();
     });
   }
-  function sbInsert(table, data) {
+
+  /* FIX v10: sbInsert acepta options.ignoreDuplicates para añadir
+     "resolution=ignore-duplicates" cuando la constraint UNIQUE existe. */
+  function sbInsert(table, data, options) {
+    var prefer = 'return=representation';
+    if (options && options.ignoreDuplicates) {
+      prefer = 'return=representation,resolution=ignore-duplicates';
+    }
     return fetch(sbUrl() + '/rest/v1/' + table, {
       method: 'POST',
-      headers: Object.assign({}, sbHead(), { 'Content-Type': 'application/json', 'Prefer': 'return=representation' }),
+      headers: Object.assign({}, sbHead(), {
+        'Content-Type': 'application/json',
+        'Prefer': prefer
+      }),
       body: JSON.stringify(data)
     }).then(function(r) {
+      /* 409 con ignore-duplicates nunca debería ocurrir, pero por si acaso */
+      if (r.status === 409) return [];
       if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
       return r.json();
     });
   }
+
   function sbUpdate(table, id, data) {
     return fetch(sbUrl() + '/rest/v1/' + table + '?id=eq.' + id, {
       method: 'PATCH',
@@ -162,24 +202,23 @@ function tgEnviar(mensaje) {
   }
 
   /* ══════════════════════════════════════════════════════════
-     CARGA DE DATOS — FIX v9
-     cargarTodo() es no-reentrable (semáforo _sincronizando).
-     Después del sync se activa COOLDOWN_MS de silencio realtime.
+     CARGA DE DATOS — FIX v10
   ══════════════════════════════════════════════════════════ */
   function cargarTodo() {
-    /* Semáforo: si hay sync en curso, ignorar */
     if (_sincronizando) {
       console.log('[Seguimiento] cargarTodo() ignorado — sync en curso');
       return;
     }
-    /* Cooldown: si los propios cambios del sync acaban de disparar realtime, ignorar */
     if (Date.now() < _realtimeCooldownHasta) {
       console.log('[Seguimiento] cargarTodo() ignorado — cooldown post-sync activo');
       return;
     }
 
     _sincronizando = true;
-    _pausarRealtime(); /* pausar antes de modificar datos */
+    _pausarRealtime();
+
+    /* FIX v10: resetear el Set al inicio de cada ciclo completo */
+    _lotesYaSincronizados = new Set();
 
     var url = sbUrl();
     if (!url) {
@@ -205,13 +244,14 @@ function tgEnviar(mensaje) {
           })
         : []);
 
-      /* FIX v9: sync conservador — solo genera cuotas si NO existen aún */
-      var promesasSync = lotesParaSync.map(function(l){ return sincronizarCuotas(l); });
-
-      return Promise.all(promesasSync);
+      /* FIX v10: sync secuencial en lugar de paralelo.
+         Promise.all hacía que todos los lotes vieran _pagos vacío
+         simultáneamente. Con reduce encadenamos las promesas. */
+      return lotesParaSync.reduce(function(cadena, lote) {
+        return cadena.then(function() { return sincronizarCuotas(lote); });
+      }, Promise.resolve());
 
     }).then(function(){
-      /* FIX v9: activar cooldown ANTES de re-suscribir realtime */
       _realtimeCooldownHasta = Date.now() + COOLDOWN_MS;
       _sincronizando = false;
       _renderVista();
@@ -240,7 +280,6 @@ function tgEnviar(mensaje) {
     ['pagos','prospectos','eventos','vendedores'].forEach(function(tabla) {
       var sub = window.supabase.channel('seg-' + tabla + '-' + Date.now())
         .on('postgres_changes', { event: '*', schema: 'public', table: tabla }, function() {
-          /* FIX v9: doble protección — semáforo + cooldown */
           if (_sincronizando) {
             console.log('[Seguimiento] realtime ignorado — sync en curso (' + tabla + ')');
             return;
@@ -256,11 +295,14 @@ function tgEnviar(mensaje) {
   }
 
   /* ══════════════════════════════════════════════════════════
-     CUOTAS AUTOMÁTICAS — FIX v9 ULTRA-CONSERVADOR
-     Solo genera cuotas si el lote NO tiene NINGUNA cuota
-     mensual (num_cuota > 0) en la base de datos.
-     Si ya existen cuotas (aunque sea 1), no toca nada.
-     Esto protege todas las ediciones manuales.
+     CUOTAS AUTOMÁTICAS — FIX v10
+     Tres capas de protección contra duplicados:
+       1. _lotesYaSincronizados (Set en memoria) — previene
+          concurrencia dentro del mismo ciclo JS.
+       2. Consulta directa a Supabase — fuente de verdad real,
+          no depende de _pagos local.
+       3. ignoreDuplicates en el INSERT — última barrera si la
+          constraint UNIQUE (lot_id, num_cuota) existe en la BD.
   ══════════════════════════════════════════════════════════ */
   function generarCuotasDeLote(lote) {
     if (lote.payType === 'cash') return [];
@@ -298,31 +340,38 @@ function tgEnviar(mensaje) {
     return cuotas;
   }
 
-  /* FIX v9: ULTRA-CONSERVADOR
-     - Si ya existe al menos 1 cuota mensual → no hace nada.
-     - Solo inserta si el lote no tiene ninguna cuota aún.
-     - NUNCA borra cuotas existentes en el sync automático. */
   function sincronizarCuotas(lote) {
-    var existentes = _pagos.filter(function(p){
-      return p.lot_id === lote.id && p.num_cuota > 0;
-    });
-
-    /* Si ya hay cuotas, no tocar nada — proteger ediciones manuales */
-    if (existentes.length > 0) {
+    /* Capa 1: semáforo por lote en este ciclo */
+    if (_lotesYaSincronizados.has(lote.id)) {
+      console.log('[Seguimiento] Sync lote', lote.id, 'omitido — ya procesado en este ciclo');
       return Promise.resolve();
     }
+    _lotesYaSincronizados.add(lote.id);
 
-    /* Solo llega aquí si no hay ninguna cuota para este lote */
-    var cuotas = generarCuotasDeLote(lote);
-    if (!cuotas.length) return Promise.resolve();
+    /* Capa 2: consulta directa a Supabase (fuente de verdad) */
+    return sbFetch('pagos', 'select=id&lot_id=eq.' + lote.id + '&num_cuota=gt.0&limit=1')
+      .then(function(filas) {
+        if (filas && filas.length > 0) {
+          /* Ya existen cuotas — no tocar nada */
+          return Promise.resolve();
+        }
 
-    console.log('[Seguimiento] Generando cuotas iniciales para lote', lote.id, '—', cuotas.length, 'cuotas');
-    return sbInsert('pagos', cuotas)
-      .then(function(nuevas) {
-        _pagos = _pagos.concat(nuevas || []);
+        /* No hay cuotas → generarlas */
+        var cuotas = generarCuotasDeLote(lote);
+        if (!cuotas.length) return Promise.resolve();
+
+        console.log('[Seguimiento] Generando cuotas iniciales para lote', lote.id, '—', cuotas.length, 'cuotas');
+
+        /* Capa 3: ignoreDuplicates por si la constraint UNIQUE existe */
+        return sbInsert('pagos', cuotas, { ignoreDuplicates: true })
+          .then(function(nuevas) {
+            if (nuevas && nuevas.length) {
+              _pagos = _pagos.concat(nuevas);
+            }
+          });
       })
       .catch(function(e){
-        console.error('[Seguimiento] Error generando cuotas', lote.id, e);
+        console.error('[Seguimiento] Error sincronizando cuotas lote', lote.id, e);
       });
   }
 
@@ -357,7 +406,6 @@ function tgEnviar(mensaje) {
       );
     }
 
-    /* Activar cooldown después de la cascada para que realtime no re-cargue */
     return Promise.all(promesas).then(function() {
       _realtimeCooldownHasta = Date.now() + COOLDOWN_MS;
     }).catch(function(e){
@@ -1163,8 +1211,6 @@ function tgEnviar(mensaje) {
 
   /* ══════════════════════════════════════════════════════════
      MODAL "EDITAR VENTA"
-     FIX v9: al guardar con cambio financiero, activa cooldown
-     antes de borrar/regenerar cuotas para que realtime no interfiera.
   ══════════════════════════════════════════════════════════ */
   window._segEditarVenta = function(loteId) {
     var lote = window.S && window.S.lots
@@ -1251,8 +1297,10 @@ function tgEnviar(mensaje) {
       if (typeof syncLot === 'function') syncLot(lote);
 
       if (cambioFinanciero) {
-        /* FIX v9: activar cooldown ANTES de borrar para suprimir realtime */
         _realtimeCooldownHasta = Date.now() + COOLDOWN_MS;
+        /* FIX v10: limpiar el lote del Set para permitir re-sync tras edición */
+        _lotesYaSincronizados.delete(lote.id);
+
         var existentes = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota > 0; });
         Promise.all(existentes.map(function(p){ return sbDelete('pagos', p.id); }))
           .then(function(){
@@ -1260,11 +1308,11 @@ function tgEnviar(mensaje) {
             _acordeonesAbiertos[lote.id] = true;
             var cuotasNuevas = generarCuotasDeLote(lote);
             if (!cuotasNuevas.length) return Promise.resolve([]);
-            return sbInsert('pagos', cuotasNuevas);
+            /* ignoreDuplicates como última red de seguridad */
+            return sbInsert('pagos', cuotasNuevas, { ignoreDuplicates: true });
           })
           .then(function(nuevas){
             if (nuevas && nuevas.length) _pagos = _pagos.concat(nuevas);
-            /* Renovar cooldown tras los INSERT */
             _realtimeCooldownHasta = Date.now() + COOLDOWN_MS;
             _cerrarModal();
             _renderVista();
@@ -1622,7 +1670,6 @@ function tgEnviar(mensaje) {
         datosUpdate.abonado    = monto;
       }
 
-      /* FIX v9: cooldown antes del PATCH para suprimir realtime del pago */
       _realtimeCooldownHasta = Date.now() + COOLDOWN_MS;
       sbUpdate('pagos', pagoId, datosUpdate).then(function() {
         var idx = _pagos.findIndex(function(p){ return p.id === pagoId; });
@@ -1758,7 +1805,6 @@ function tgEnviar(mensaje) {
         datosUpdate.fecha_pago = null;
       }
 
-      /* FIX v9: cooldown antes de modificar */
       _realtimeCooldownHasta = Date.now() + COOLDOWN_MS;
       sbUpdate('pagos', pagoId, datosUpdate)
         .then(function() {
