@@ -1,26 +1,17 @@
 /* ═══════════════════════════════════════════════════════════════
-   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v7
-   Cambios v6:
-     PAGOS FIX  : Corregida la generación de cuotas cuando el lote
-                  tiene datos incompletos (cmAmt / saldo 0). Ahora
-                  se recalcula correctamente desde salePrice, dn y mo.
-     PAGOS UX   : La sección de cada lote/cliente ahora funciona como
-                  acordeón desplegable (colapsado por defecto).
-                  Buscador de clientes/lotes en la parte superior.
-                  Botón "Ver detalle / Editar venta" en la cabecera de
-                  cada acordeón que abre el modal de edición del lote.
-   Ajustes adicionales:
-     RECAUDADO  : Solo suma cuotas marcadas como pagado=true (su monto)
-                  más abonos parciales (abonado) de cuotas aún no pagadas.
-                  Las cuotas iniciales no pagadas no suman.
-     EDITAR ABONO: El modal de editar cuota ahora permite modificar
-                  el valor abonado directamente.
-   FIX v7:
-     BUCLE INF  : sincronizarCuotas ya NO llama _renderVista() internamente.
-                  _renderPagos ya NO llama sincronizarCuotas() en cada render.
-                  La sincronización ocurre UNA sola vez dentro de cargarTodo(),
-                  antes del primer render, eliminando el bucle infinito de
-                  DELETE/POST que saturaba los recursos de red.
+   tab-seguimiento.js  —  Araguatos · ING3DRECO SAS  v8
+   FIX v8 (definitivo anti-bucle):
+     1. SEMÁFORO _sincronizando: cargarTodo() es no-reentrable.
+        Si llega una nueva llamada mientras hay una sincronización
+        en curso, se ignora. Esto corta el ciclo
+        Realtime → cargarTodo → sync → DELETE/INSERT → Realtime.
+     2. REALTIME TARDÍO: _iniciarRealtime() solo se activa DESPUÉS
+        de que terminen todos los sincronizarCuotas(). Antes solo
+        escuchaba sin que los cambios causados por el propio sync
+        disparen una nueva carga.
+     3. FIX CONTEO CUOTAS: sincronizarCuotas() excluye num_cuota===0
+        (cuota inicial) del conteo de existentes, evitando
+        regeneraciones falsas cuando existe solo la CI.
    ═══════════════════════════════════════════════════════════════ */
 (function () {
 var TG_CHAT_ID = '-5030514648';
@@ -53,13 +44,16 @@ function tgEnviar(mensaje) {
   var _realtimeSubs   = [];
   var _notifVistas    = {};
 
+  /* ── FIX v8: semáforo para evitar re-entrada en cargarTodo ── */
+  var _sincronizando  = false;
+
   /* ── v5: estado del buscador de eventos ──────────────────── */
   var _busquedaEvento  = '';
   var _resultadosBusq  = null;
 
   /* ── v6: estado UI de Pagos ──────────────────────────────── */
-  var _busquedaPagos   = '';          // texto buscador de pagos
-  var _acordeonesAbiertos = {};       // { loteId: true/false }
+  var _busquedaPagos   = '';
+  var _acordeonesAbiertos = {};
 
   /* ── Helpers de fecha ─────────────────────────────────────── */
   var MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
@@ -77,11 +71,11 @@ function tgEnviar(mensaje) {
   }
   function _pad(n)  { return n < 10 ? '0' + n : '' + n; }
   function _normalizar(str) {
-  return String(str || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-}
+    return String(str || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  }
   function _padFecha(y, m, d) { return y + '-' + _pad(m) + '-' + _pad(d); }
 
   function isoFecha(d) {
@@ -117,7 +111,6 @@ function tgEnviar(mensaje) {
     }).format(Math.round(val * 1e6));
   }
 
-  /* ── Sumar +N meses conservando el día ──────────────────── */
   function sumarMes(isoFechaStr, meses) {
     var p = isoFechaStr.slice(0,10).split('-').map(Number);
     var d = new Date(p[0], p[1] - 1 + meses, p[2]);
@@ -165,10 +158,32 @@ function tgEnviar(mensaje) {
     });
   }
 
-  /* ── Carga de datos ───────────────────────────────────────── */
+  /* ══════════════════════════════════════════════════════════
+     CARGA DE DATOS — FIX v8
+     cargarTodo() es no-reentrable gracias al semáforo _sincronizando.
+     _iniciarRealtime() se llama SOLO después de que todas las
+     sincronizaciones terminan, para que los propios DELETE/INSERT
+     del sync no disparen nuevas cargas.
+  ══════════════════════════════════════════════════════════ */
   function cargarTodo() {
+    /* FIX v8 — semáforo: si ya hay una sincronización en curso, salir */
+    if (_sincronizando) {
+      console.log('[Seguimiento] cargarTodo() ignorado — sync en curso');
+      return;
+    }
+    _sincronizando = true;
+
     var url = sbUrl();
-    if (!url) { _renderVista(); return; }
+    if (!url) {
+      _sincronizando = false;
+      _renderVista();
+      return;
+    }
+
+    /* FIX v8 — pausar realtime ANTES de cargar para que los cambios
+       producidos por sincronizarCuotas() no disparen nuevas cargas */
+    _pausarRealtime();
+
     Promise.all([
       sbFetch('pagos',      'select=*&order=fecha_vence.asc'),
       sbFetch('prospectos', 'select=*&order=created_at.desc'),
@@ -180,35 +195,47 @@ function tgEnviar(mensaje) {
       _eventos    = res[2] || [];
       _vendedores = res[3] || [];
 
-      /* ── FIX v7: sincronizar cuotas UNA sola vez aquí, antes de renderear.
-            Así se evita el bucle infinito que ocurría cuando _renderPagos
-            llamaba a sincronizarCuotas, que a su vez llamaba a _renderVista. ── */
       var lotesParaSync = (window.S && window.S.lots
         ? window.S.lots.filter(function(l){
             return (l.status === 'sold' || l.status === 'apartado') && l.payType !== 'cash';
           })
         : []);
+
       var promesasSync = lotesParaSync.map(function(l){ return sincronizarCuotas(l); });
-      Promise.all(promesasSync).then(function(){
-        _renderVista();
-        _actualizarCampanita();
-        _iniciarRealtime();
-      });
+
+      return Promise.all(promesasSync);
+
+    }).then(function(){
+      _sincronizando = false;   /* liberar semáforo */
+      _renderVista();
+      _actualizarCampanita();
+      /* FIX v8 — iniciar realtime DESPUÉS del sync, no antes */
+      _iniciarRealtime();
 
     }).catch(function(e) {
       console.error('[Seguimiento] Error:', e);
+      _sincronizando = false;   /* liberar semáforo incluso en error */
       _renderVista();
+      _iniciarRealtime();
     });
+  }
+
+  /* ── Pausar / reanudar realtime ───────────────────────────── */
+  function _pausarRealtime() {
+    _realtimeSubs.forEach(function(s){ try{ s.unsubscribe(); }catch(e){} });
+    _realtimeSubs = [];
   }
 
   /* ── Realtime ─────────────────────────────────────────────── */
   function _iniciarRealtime() {
     if (typeof window.supabase === 'undefined') return;
-    _realtimeSubs.forEach(function(s){ try{ s.unsubscribe(); }catch(e){} });
-    _realtimeSubs = [];
+    /* Limpiar suscripciones anteriores antes de crear nuevas */
+    _pausarRealtime();
     ['pagos','prospectos','eventos','vendedores'].forEach(function(tabla) {
       var sub = window.supabase.channel('seg-' + tabla)
         .on('postgres_changes', { event: '*', schema: 'public', table: tabla }, function() {
+          /* FIX v8 — el semáforo en cargarTodo() evita que los propios
+             cambios del sync disparen re-cargas en cascada */
           cargarTodo();
         }).subscribe();
       _realtimeSubs.push(sub);
@@ -216,9 +243,7 @@ function tgEnviar(mensaje) {
   }
 
   /* ══════════════════════════════════════════════════════════
-     CUOTAS AUTOMÁTICAS — v6 FIX
-     Se corrige el cálculo cuando cmAmt es 0 o falta:
-     siempre recalcula desde salePrice, dn% y mo.
+     CUOTAS AUTOMÁTICAS
   ══════════════════════════════════════════════════════════ */
   function generarCuotasDeLote(lote) {
     if (lote.payType === 'cash') return [];
@@ -226,22 +251,20 @@ function tgEnviar(mensaje) {
     if (mo <= 0) return [];
 
     var precio = Number(lote.salePrice) || 0;
-    if (precio <= 0) return [];                     // sin precio, nada que generar
+    if (precio <= 0) return [];
 
-    /* Cuota inicial: si dnAmt está definido y > 0 se usa, si no se calcula */
-    var dnPct = Number(lote.dn) || 20;              // porcentaje de enganche
+    var dnPct = Number(lote.dn) || 20;
     var dn    = Number(lote.dnAmt) > 0
                   ? Number(lote.dnAmt)
                   : precio * dnPct / 100;
 
     var saldo = Math.max(0, precio - dn);
 
-    /* Cuota mensual: si cmAmt > 0 se usa, si no se calcula */
     var cuotaMes = Number(lote.cmAmt) > 0
                      ? Number(lote.cmAmt)
                      : (saldo / mo);
 
-    if (cuotaMes <= 0) return [];                   // v6 fix: evita generar cuotas en $0
+    if (cuotaMes <= 0) return [];
 
     var base = lote.saleDate
                  ? new Date(lote.saleDate + 'T12:00:00')
@@ -258,17 +281,17 @@ function tgEnviar(mensaje) {
     return cuotas;
   }
 
-  /* ── FIX v7: sincronizarCuotas ya NO llama _renderVista().
-        El render lo controla cargarTodo() una vez que todas las
-        sincronizaciones terminan. Esto corta el bucle infinito. ── */
+  /* FIX v8 — sincronizarCuotas excluye num_cuota===0 (cuota inicial)
+     del conteo para evitar regeneraciones falsas */
   function sincronizarCuotas(lote) {
-    var existentes = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota > 0; });
+    /* Solo cuotas mensuales (num_cuota > 0) — excluir la CI */
+    var existentes = _pagos.filter(function(p){
+      return p.lot_id === lote.id && p.num_cuota > 0;
+    });
 
-    /* v6 fix: si existen pero todas tienen monto 0 → borrar y regenerar */
     var todasCero = existentes.length > 0 && existentes.every(function(p){
       return Number(p.monto) === 0;
     });
-    /* v6 fix: si el número de cuotas existentes no coincide con lote.mo → regenerar */
     var cantidadIncorrecta = existentes.length > 0 && parseInt(lote.mo) > 0 &&
                              existentes.length !== parseInt(lote.mo);
 
@@ -279,7 +302,6 @@ function tgEnviar(mensaje) {
     var cuotas = generarCuotasDeLote(lote);
     if (!cuotas.length) return Promise.resolve();
 
-    /* Si hay cuotas malas, eliminarlas primero */
     var promesaBorrado = Promise.resolve();
     if (existentes.length > 0) {
       promesaBorrado = Promise.all(existentes.map(function(p){
@@ -295,7 +317,6 @@ function tgEnviar(mensaje) {
       return sbInsert('pagos', cuotas);
     }).then(function(nuevas) {
       _pagos = _pagos.concat(nuevas || []);
-      /* FIX v7: eliminado _renderVista() — lo maneja cargarTodo() */
     }).catch(function(e){ console.error('[Seguimiento] Error cuotas', lote.id, e); });
   }
 
@@ -615,8 +636,8 @@ function tgEnviar(mensaje) {
     var termino = valor.trim();
     var terminoNorm = _normalizar(termino);
     var resultados = _eventos.filter(function(e) {
-    return _normalizar(e.titulo).indexOf(terminoNorm) !== -1;
-});
+      return _normalizar(e.titulo).indexOf(terminoNorm) !== -1;
+    });
     _resultadosBusq = resultados;
     _renderVista();
   };
@@ -699,7 +720,6 @@ function tgEnviar(mensaje) {
     return resultado;
   }
 
-  /* ── Panel día (v5: incluye cuotas del día) ─────────────── */
   function _panelDia(isoD, evsFiltrados) {
     evsFiltrados = evsFiltrados || _eventos;
     var evsDia = evsFiltrados
@@ -859,18 +879,13 @@ function tgEnviar(mensaje) {
   }
 
   /* ══════════════════════════════════════════════════════════
-     VISTA 2 — PAGOS  (v6: acordeón + buscador + editar venta)
-     FIX v7: eliminada la llamada a sincronizarCuotas() aquí.
-             Ahora la sincronización ocurre solo en cargarTodo().
+     VISTA 2 — PAGOS
   ══════════════════════════════════════════════════════════ */
   function _renderPagos(c) {
     var lotesVendidos = (window.S && window.S.lots
       ? window.S.lots.filter(function(l){ return (l.status==='sold'||l.status==='apartado') && l.payType!=='cash'; })
       : []);
 
-    /* ── RECAUDADO: suma de cuotas pagado=true (su monto) +
-          abonos parciales de cuotas pagado=false con abonado > 0.
-          Las cuotas iniciales (num_cuota === 0) no pagadas NO suman. ── */
     var totalRecaudado = _pagos.reduce(function(s, p) {
       if (p.pagado) {
         return s + (Number(p.monto) || 0);
@@ -879,7 +894,6 @@ function tgEnviar(mensaje) {
       }
     }, 0);
 
-    /* ── PENDIENTE: lo que falta por cobrar en cuotas no pagadas ── */
     var totalPendiente = _pagos.reduce(function(s,p){
       if (p.pagado) return s;
       var abonado = Number(p.abonado) || 0;
@@ -888,7 +902,6 @@ function tgEnviar(mensaje) {
 
     var enMora = _pagos.filter(function(p){ return !p.pagado && diffDias(p.fecha_vence) < 0; }).length;
 
-    /* ── Filtrar lotes según buscador ── */
     var busq = (_busquedaPagos || '').toLowerCase().trim();
     var lotesFiltrados = busq
       ? lotesVendidos.filter(function(l){
@@ -899,7 +912,6 @@ function tgEnviar(mensaje) {
         })
       : lotesVendidos;
 
-    /* ── HTML del buscador ── */
     var busqPagosHTML =
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;' +
       'background:#fff;border:1.5px solid #ddd;border-radius:10px;padding:7px 13px;' +
@@ -932,17 +944,12 @@ function tgEnviar(mensaje) {
         : lotesFiltrados.map(function(l){ return _acordeonLote(l); }).join('')
       );
 
-    /* FIX v7: eliminada la llamada a sincronizarCuotas() aquí.
-       La sincronización ya ocurrió en cargarTodo() antes del primer render. */
-
-    /* Foco al buscador si tenía texto */
     if (_busquedaPagos) {
       var inp = document.getElementById('segBusqPagos');
       if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
     }
   }
 
-  /* ── Handlers buscador de pagos ──────────────────────────── */
   window._segBuscarPagos = function(valor) {
     _busquedaPagos = valor;
     _renderVista();
@@ -952,11 +959,6 @@ function tgEnviar(mensaje) {
     _renderVista();
   };
 
-  /* ── Acordeón por lote ─────────────────────────────────────
-     v6: cada lote se muestra colapsado por defecto.
-     El encabezado tiene: toggle ▶/▼, nombre, KPIs rápidos,
-     botón "✏️ Editar venta" y botón expandir.
-  ─────────────────────────────────────────────────────────── */
   function _acordeonLote(lote) {
     var abierto = !!_acordeonesAbiertos[lote.id];
     var cuotas  = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota !== 0; })
@@ -971,7 +973,6 @@ function tgEnviar(mensaje) {
     var ciRow   = _pagos.find(function(p){ return p.lot_id === lote.id && p.num_cuota === 0; });
     var dnPagado = ciRow ? ciRow.pagado : (lote.dnPagado || false);
 
-    /* Semáforo global del lote */
     var enMoraLote   = cuotas.filter(function(p){ return !p.pagado && diffDias(p.fecha_vence) < 0; }).length;
     var proxVenceLote = cuotas.filter(function(p){ return !p.pagado && diffDias(p.fecha_vence) >= 0 && diffDias(p.fecha_vence) <= 7; }).length;
     var colorLote = enMoraLote > 0 ? '#c62828' : proxVenceLote > 0 ? '#e65100' : pct >= 100 ? '#2e7d32' : '#1565c0';
@@ -981,7 +982,6 @@ function tgEnviar(mensaje) {
     var cuerpo = abierto ? _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct) : '';
 
     return '<div class="card" style="margin-bottom:10px;overflow:hidden" id="acord-'+lote.id+'">' +
-      /* ── Cabecera del acordeón ── */
       '<div onclick="window._segToggleAcordeon(\''+lote.id+'\')" ' +
       'style="display:flex;align-items:center;gap:10px;padding:14px 16px;cursor:pointer;' +
       'background:'+(abierto?'#f8f9ff':'#fff')+';' +
@@ -989,15 +989,9 @@ function tgEnviar(mensaje) {
       'transition:background .15s;user-select:none" ' +
       'onmouseover="this.style.background=\'#f0f4ff\'" ' +
       'onmouseout="this.style.background=\''+(abierto?'#f8f9ff':'#fff')+'\'">' +
-
-      /* Flecha */
       '<div style="font-size:14px;color:#1565c0;transition:transform .2s;transform:'+(abierto?'rotate(90deg)':'rotate(0deg)')+'">' +
       '▶</div>' +
-
-      /* Ícono semáforo */
       '<div style="font-size:18px;flex-shrink:0">'+iconoLote+'</div>' +
-
-      /* Nombre y datos */
       '<div style="flex:1;min-width:0">' +
       '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">' +
       '<span style="font-size:14px;font-weight:800;color:#1a237e">Lote '+_escapeHtml(String(lote.id))+'</span>' +
@@ -1012,34 +1006,27 @@ function tgEnviar(mensaje) {
       (proxVenceLote > 0 ? '<span style="font-size:10px;background:#fff3e0;color:#e65100;padding:2px 7px;border-radius:10px;font-weight:700">'+proxVenceLote+' vencen pronto</span>' : '') +
       '</div>' +
       '</div>' +
-
-      /* Botones de la cabecera (no propagan el toggle) */
       '<div style="display:flex;gap:6px;flex-shrink:0" onclick="event.stopPropagation()">' +
       '<button onclick="window._segEditarVenta(\''+lote.id+'\')" title="Ver/Editar datos de la venta" ' +
       'style="padding:5px 10px;border:1.5px solid #1565c0;border-radius:7px;background:#e3f2fd;' +
       'color:#1565c0;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">✏️ Editar venta</button>' +
       '</div>' +
       '</div>' +
-
-      /* ── Cuerpo colapsable ── */
       '<div id="acord-body-'+lote.id+'" style="display:'+(abierto?'block':'none')+'">' +
       cuerpo +
       '</div>' +
       '</div>';
   }
 
-  /* ── Toggle del acordeón ─────────────────────────────────── */
   window._segToggleAcordeon = function(loteId) {
     var estaAbierto = !!_acordeonesAbiertos[loteId];
     _acordeonesAbiertos[loteId] = !estaAbierto;
 
-    /* Renderizado parcial sin repintar todo */
     var body = document.getElementById('acord-body-' + loteId);
     var card = document.getElementById('acord-' + loteId);
     if (!body || !card) { _renderVista(); return; }
 
     if (!estaAbierto) {
-      /* Abrir: inyectar contenido si está vacío */
       if (!body.innerHTML.trim()) {
         var lote = window.S && window.S.lots
           ? window.S.lots.find(function(l){ return l.id === loteId; })
@@ -1058,7 +1045,6 @@ function tgEnviar(mensaje) {
         body.innerHTML = _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct);
       }
       body.style.display = 'block';
-      /* Actualizar cabecera visualmente */
       var cabFl = card.querySelector('div[onclick] > div:first-child');
       if (cabFl) cabFl.style.transform = 'rotate(90deg)';
       var cabBg = card.querySelector('div[onclick]');
@@ -1080,7 +1066,6 @@ function tgEnviar(mensaje) {
     }
   };
 
-  /* ── Cuerpo del lote (tabla de cuotas) ───────────────────── */
   function _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct) {
     var dnFecha = ciRow ? ciRow.fecha_pago : (lote.dnFecha || lote.saleDate || null);
     var dnNota  = ciRow ? ciRow.nota       : (lote.dnNota  || '');
@@ -1168,8 +1153,7 @@ function tgEnviar(mensaje) {
   }
 
   /* ══════════════════════════════════════════════════════════
-     MODAL "EDITAR VENTA" — v6
-     Abre los datos principales del lote en un modal para editar.
+     MODAL "EDITAR VENTA"
   ══════════════════════════════════════════════════════════ */
   window._segEditarVenta = function(loteId) {
     var lote = window.S && window.S.lots
@@ -1187,46 +1171,37 @@ function tgEnviar(mensaje) {
       '<div style="background:#e3f2fd;border-radius:9px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#1565c0">' +
       '📋 Lote <b>' + _escapeHtml(String(lote.id)) + '</b> — Edición de datos de la venta' +
       '</div>' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Comprador *</label>' +
       '<input id="evLoteBuyer" type="text" value="'+_escapeHtml(lote.buyer||'')+'" placeholder="Nombre completo" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Cédula (C.C.)</label>' +
       '<input id="evLoteCC" type="text" value="'+_escapeHtml(lote.cc||'')+'" placeholder="Ej: 1234567890" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Teléfono</label>' +
       '<input id="evLotePhone" type="tel" value="'+_escapeHtml(lote.phone||'')+'" placeholder="Ej: 3001234567" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Precio de venta (millones COP) *</label>' +
       '<input id="evLotePrecio" type="number" step="0.0001" value="'+precio+'" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box" ' +
       'oninput="window._segEVActualizar()">' +
       '<div id="evLotePrecioPreview" style="font-size:11px;color:#888;margin-bottom:12px"></div>' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Número de cuotas (meses) *</label>' +
       '<input id="evLoteMo" type="number" min="1" max="360" value="'+mo+'" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box" ' +
       'oninput="window._segEVActualizar()">' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Cuota inicial / Enganche (millones COP)</label>' +
       '<input id="evLoteDN" type="number" step="0.0001" value="'+dnAmt+'" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box" ' +
       'oninput="window._segEVActualizar()">' +
       '<div id="evLoteDNPreview" style="font-size:11px;color:#888;margin-bottom:12px"></div>' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Cuota mensual (millones COP) — dejar en 0 para calcular automático</label>' +
       '<input id="evLoteCM" type="number" step="0.0001" value="'+cmAmt+'" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box" ' +
       'oninput="window._segEVActualizar()">' +
       '<div id="evLoteCMPreview" style="font-size:11px;color:#1565c0;font-weight:600;margin-bottom:12px"></div>' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de inicio de cuotas</label>' +
       '<input id="evLoteFecha" type="date" value="'+(lote.saleDate||'')+'" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-
       '<div style="background:#fff3e0;border-radius:8px;padding:10px 12px;font-size:11px;color:#e65100;line-height:1.5">' +
       '⚠️ Si cambias el precio, cuotas o meses, las cuotas existentes se <b>eliminarán y regenerarán</b> automáticamente.' +
       '</div>';
@@ -1701,7 +1676,7 @@ function tgEnviar(mensaje) {
   };
 
   /* ══════════════════════════════════════════════════════════
-     MODAL EDITAR CUOTA — incluye campo "Abonado" editable
+     MODAL EDITAR CUOTA
   ══════════════════════════════════════════════════════════ */
   window._segEditarCuota = function(pagoId) {
     var pago = _pagos.find(function(p){ return p.id === pagoId; });
@@ -1718,12 +1693,10 @@ function tgEnviar(mensaje) {
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Fecha de vencimiento</label>' +
       '<input id="segCuotaFecha" type="date" value="' + (pago.fecha_vence || '') + '" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:12px;box-sizing:border-box">' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Monto (en millones COP)</label>' +
       '<input id="segCuotaMonto" type="number" step="0.0001" value="' + (pago.monto || '') + '" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
       '<div style="font-size:11px;color:#888;margin-bottom:12px" id="segCuotaMontoPreview"></div>' +
-
       '<label style="display:block;font-size:12px;font-weight:600;color:#444;margin-bottom:4px">Abonado actual (en millones COP)</label>' +
       '<input id="segCuotaAbonado" type="number" step="0.0001" min="0" value="' + abonadoActual + '" ' +
       'style="width:100%;padding:9px 11px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;margin-bottom:4px;box-sizing:border-box">' +
@@ -1732,7 +1705,6 @@ function tgEnviar(mensaje) {
       '💜 Editar este campo corrige directamente el abono registrado. ' +
       'Si el abono iguala o supera el monto, la cuota se marcará como <b>pagada</b>.' +
       '</div>' +
-
       (hayFuturas
         ? '<div style="background:#e3f2fd;border-radius:8px;padding:10px 12px;margin-bottom:4px">' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;color:#1565c0">' +
