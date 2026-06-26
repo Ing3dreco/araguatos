@@ -82,8 +82,10 @@ function tgEnviar(mensaje) {
   var _resultadosBusq  = null;
 
   /* ── v6: estado UI de Pagos ──────────────────────────────── */
-  var _busquedaPagos   = '';
+  var _busquedaPagos      = '';
   var _acordeonesAbiertos = {};
+  /* v11: filtro activo al hacer clic en tarjeta resumen (null | 'recaudado' | 'pendiente' | 'mora') */
+  var _filtroResumenPagos = null;
 
   /* ── Helpers de fecha ─────────────────────────────────────── */
   var MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
@@ -987,19 +989,24 @@ function tgEnviar(mensaje) {
         : '') +
       '</div>';
 
+    var panelDetalle = _filtroResumenPagos ? _renderDetalleResumen(_filtroResumenPagos, lotesVendidos) : '';
+
     c.innerHTML =
-      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">' +
-      _kpiBox('✅ Recaudado', fmtMonto(totalRecaudado), '#e8f5e9','#2e7d32') +
-      _kpiBox('⏳ Pendiente', fmtMonto(totalPendiente), '#e3f2fd','#1565c0') +
-      _kpiBox('🔴 En mora',   enMora+' cuotas',         '#ffebee','#c62828') +
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:' + (_filtroResumenPagos ? '0' : '16px') + '">' +
+      _kpiBox('✅ Recaudado', fmtMonto(totalRecaudado), '#e8f5e9','#2e7d32', 'window._segToggleFiltroResumen(\'recaudado\')', _filtroResumenPagos === 'recaudado') +
+      _kpiBox('⏳ Pendiente', fmtMonto(totalPendiente), '#e3f2fd','#1565c0', 'window._segToggleFiltroResumen(\'pendiente\')', _filtroResumenPagos === 'pendiente') +
+      _kpiBox('🔴 En mora',   enMora+' cuotas',         '#ffebee','#c62828', 'window._segToggleFiltroResumen(\'mora\')',      _filtroResumenPagos === 'mora') +
       '</div>' +
+      panelDetalle +
+      '<div style="margin-top:16px">' +
       busqPagosHTML +
       (lotesFiltrados.length === 0
         ? '<div class="al al-i" style="text-align:center;padding:32px;color:#999;font-size:13px">' +
           (busq ? '🔍 Sin resultados para "'+_escapeHtml(_busquedaPagos)+'"' : 'No hay ventas financiadas registradas.') +
           '</div>'
         : lotesFiltrados.map(function(l){ return _acordeonLote(l); }).join('')
-      );
+      ) +
+      '</div>';
 
     if (_busquedaPagos) {
       var inp = document.getElementById('segBusqPagos');
@@ -1015,6 +1022,161 @@ function tgEnviar(mensaje) {
     _busquedaPagos = '';
     _renderVista();
   };
+
+  /* ══════════════════════════════════════════════════════════
+     v11 — PANEL DE DETALLE DE TARJETAS RESUMEN
+  ══════════════════════════════════════════════════════════ */
+  window._segToggleFiltroResumen = function(tipo) {
+    _filtroResumenPagos = (_filtroResumenPagos === tipo) ? null : tipo;
+    _renderVista();
+  };
+
+  function _renderDetalleResumen(tipo, lotesVendidos) {
+    var config = {
+      recaudado: { titulo: '✅ Detalle — Recaudado',  bg: '#e8f5e9', color: '#2e7d32', border: '#a5d6a7' },
+      pendiente: { titulo: '⏳ Detalle — Pendiente',   bg: '#e3f2fd', color: '#1565c0', border: '#90caf9' },
+      mora:      { titulo: '🔴 Detalle — Cuotas en mora', bg: '#ffebee', color: '#c62828', border: '#ef9a9a' }
+    };
+    var cfg = config[tipo];
+
+    /* Construir filas según el tipo */
+    var filas = [];
+
+    if (tipo === 'recaudado') {
+      /* Cuotas pagadas + abonos */
+      _pagos.forEach(function(p) {
+        var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id === p.lot_id; }) : null;
+        var comprador = lote ? (lote.buyer || '—') : '—';
+        var esCI      = p.num_cuota === 0;
+
+        if (p.pagado) {
+          filas.push({
+            lote:      p.lot_id,
+            comprador: comprador,
+            cuota:     esCI ? 'CI' : '#' + p.num_cuota,
+            fecha:     p.fecha_pago || p.fecha_vence,
+            monto:     Number(p.monto) || 0,
+            nota:      p.nota || ''
+          });
+        } else if (Number(p.abonado) > 0) {
+          filas.push({
+            lote:      p.lot_id,
+            comprador: comprador,
+            cuota:     (esCI ? 'CI' : '#' + p.num_cuota) + ' (abono)',
+            fecha:     p.fecha_pago || p.fecha_vence,
+            monto:     Number(p.abonado),
+            nota:      p.nota || ''
+          });
+        }
+      });
+      filas.sort(function(a, b) { return (b.fecha || '') > (a.fecha || '') ? 1 : -1; });
+
+    } else if (tipo === 'pendiente') {
+      /* Cuotas no pagadas, agrupadas por lote */
+      _pagos.forEach(function(p) {
+        if (p.pagado) return;
+        var abonado = Number(p.abonado) || 0;
+        var monto   = Number(p.monto)   || 0;
+        var saldo   = Math.max(0, monto - abonado);
+        if (saldo <= 0) return;
+        var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id === p.lot_id; }) : null;
+        var comprador = lote ? (lote.buyer || '—') : '—';
+        var esCI      = p.num_cuota === 0;
+        filas.push({
+          lote:      p.lot_id,
+          comprador: comprador,
+          cuota:     esCI ? 'CI' : '#' + p.num_cuota,
+          fecha:     p.fecha_vence,
+          monto:     saldo,
+          abonado:   abonado > 0 ? abonado : 0,
+          nota:      p.nota || '',
+          diffDias:  diffDias(p.fecha_vence)
+        });
+      });
+      filas.sort(function(a, b) { return (a.fecha || '') > (b.fecha || '') ? 1 : -1; });
+
+    } else if (tipo === 'mora') {
+      _pagos.forEach(function(p) {
+        if (p.pagado) return;
+        var d = diffDias(p.fecha_vence);
+        if (d >= 0) return;
+        var lote = window.S && window.S.lots ? window.S.lots.find(function(l){ return l.id === p.lot_id; }) : null;
+        var comprador = lote ? (lote.buyer || '—') : '—';
+        var esCI      = p.num_cuota === 0;
+        filas.push({
+          lote:      p.lot_id,
+          comprador: comprador,
+          cuota:     esCI ? 'CI' : '#' + p.num_cuota,
+          fecha:     p.fecha_vence,
+          monto:     Number(p.monto) || 0,
+          diasVencida: Math.abs(d),
+          nota:      p.nota || ''
+        });
+      });
+      filas.sort(function(a, b) { return b.diasVencida - a.diasVencida; });
+    }
+
+    if (filas.length === 0) {
+      return '<div style="background:' + cfg.bg + ';border:1.5px solid ' + cfg.border + ';border-radius:12px;margin:10px 0;padding:20px;text-align:center;font-size:12px;color:' + cfg.color + '">' +
+        cfg.titulo + ' — Sin registros.' +
+        '</div>';
+    }
+
+    /* Total */
+    var total = filas.reduce(function(s, f) { return s + (f.monto || 0); }, 0);
+
+    /* Cabeceras según tipo */
+    var thExtra = tipo === 'recaudado' ? '<th style="padding:7px 10px;text-align:left">Fecha pago</th>' :
+                  tipo === 'pendiente' ? '<th style="padding:7px 10px;text-align:left">Vence</th><th style="padding:7px 10px;text-align:right">Abonado</th>' :
+                                        '<th style="padding:7px 10px;text-align:left">Venció el</th><th style="padding:7px 10px;text-align:center">Días vencida</th>';
+
+    var thead = '<tr style="background:' + cfg.bg + '">' +
+      '<th style="padding:7px 10px;text-align:left">Lote</th>' +
+      '<th style="padding:7px 10px;text-align:left">Comprador</th>' +
+      '<th style="padding:7px 10px;text-align:center">Cuota</th>' +
+      thExtra +
+      '<th style="padding:7px 10px;text-align:right">Monto</th>' +
+      '<th style="padding:7px 10px;text-align:left">Nota</th>' +
+      '</tr>';
+
+    var tbody = filas.map(function(f, i) {
+      var bgRow = i % 2 === 0 ? '#fff' : cfg.bg.replace(')', ',0.35)').replace('rgb','rgba');
+      var tdExtra = tipo === 'recaudado'
+        ? '<td style="padding:7px 10px;color:#555">' + fmtFecha(f.fecha) + '</td>'
+        : tipo === 'pendiente'
+        ? '<td style="padding:7px 10px;color:#555">' + fmtFecha(f.fecha) + '</td>' +
+          '<td style="padding:7px 10px;text-align:right;color:#9c27b0">' + (f.abonado > 0 ? fmtMonto(f.abonado) : '—') + '</td>'
+        : '<td style="padding:7px 10px;color:#c62828">' + fmtFecha(f.fecha) + '</td>' +
+          '<td style="padding:7px 10px;text-align:center"><span style="background:#ffebee;color:#c62828;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700">' + f.diasVencida + 'd</span></td>';
+
+      return '<tr style="border-top:1px solid #f0f0f0;background:' + bgRow + '">' +
+        '<td style="padding:7px 10px;font-weight:700;color:#1a237e">' + _escapeHtml(String(f.lote)) + '</td>' +
+        '<td style="padding:7px 10px;font-size:12px;color:#333">' + _escapeHtml(f.comprador) + '</td>' +
+        '<td style="padding:7px 10px;text-align:center;font-size:11px;font-weight:700;color:' + cfg.color + '">' + f.cuota + '</td>' +
+        tdExtra +
+        '<td style="padding:7px 10px;text-align:right;font-weight:700;color:' + cfg.color + '">' + fmtMonto(f.monto) + '</td>' +
+        '<td style="padding:7px 10px;font-size:11px;color:#888;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _escapeHtml(f.nota || '—') + '</td>' +
+        '</tr>';
+    }).join('');
+
+    var tfooter = '<tr style="background:' + cfg.bg + ';font-weight:800;border-top:2px solid ' + cfg.border + '">' +
+      '<td colspan="' + (tipo === 'recaudado' ? '4' : '5') + '" style="padding:8px 10px;color:' + cfg.color + '">Total (' + filas.length + ' registro' + (filas.length !== 1 ? 's' : '') + ')</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:' + cfg.color + ';font-size:14px">' + fmtMonto(total) + '</td>' +
+      '<td></td></tr>';
+
+    return '<div style="background:' + cfg.bg + ';border:1.5px solid ' + cfg.border + ';border-radius:12px;margin:10px 0 6px 0;overflow:hidden">' +
+      '<div style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid ' + cfg.border + '">' +
+      '<div style="font-size:13px;font-weight:800;color:' + cfg.color + '">' + cfg.titulo + '</div>' +
+      '<button onclick="window._segToggleFiltroResumen(\'' + tipo + '\')" ' +
+      'style="background:none;border:none;cursor:pointer;font-size:16px;color:' + cfg.color + ';line-height:1;opacity:.7" title="Cerrar detalle">✕</button>' +
+      '</div>' +
+      '<div style="overflow-x:auto">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+      '<thead>' + thead + '</thead>' +
+      '<tbody>' + tbody + '</tbody>' +
+      '<tfoot>' + tfooter + '</tfoot>' +
+      '</table></div></div>';
+  }
 
   function _acordeonLote(lote) {
     var abierto = !!_acordeonesAbiertos[lote.id];
@@ -2226,10 +2388,15 @@ function tgEnviar(mensaje) {
   setInterval(function(){ _chequearNotificaciones(); _actualizarCampanita(); }, 60000);
 
   /* ── Helper KPI ───────────────────────────────────────────── */
-  function _kpiBox(label,valor,bg,color){
-    return '<div style="background:'+bg+';border-radius:10px;padding:14px;text-align:center">' +
+  function _kpiBox(label, valor, bg, color, onclick, activo) {
+    var cursor    = onclick ? 'cursor:pointer;' : '';
+    var outline   = activo  ? 'box-shadow:0 0 0 3px '+color+';transform:translateY(-2px);' : '';
+    var hoverOn   = onclick  ? ' onmouseover="this.style.opacity=\'.85\';this.style.transform=\'translateY(-2px)\'" onmouseout="this.style.opacity=\'1\';this.style.transform=\''+(activo?'translateY(-2px)':'translateY(0)')+'\'"' : '';
+    var clickAttr = onclick  ? ' onclick="'+onclick+'"' : '';
+    return '<div'+clickAttr+hoverOn+' style="background:'+bg+';border-radius:10px;padding:14px;text-align:center;'+cursor+outline+'transition:transform .15s,box-shadow .15s,opacity .15s;user-select:none">' +
       '<div style="font-size:18px;font-weight:900;color:'+color+'">'+valor+'</div>' +
       '<div style="font-size:11px;color:'+color+';margin-top:3px;opacity:.8">'+label+'</div>' +
+      (onclick ? '<div style="font-size:9px;color:'+color+';margin-top:4px;opacity:.6">'+(activo?'▲ Ocultar detalle':'▼ Ver detalle')+'</div>' : '') +
       '</div>';
   }
 
