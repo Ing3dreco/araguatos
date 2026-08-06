@@ -364,22 +364,33 @@ function tgEnviar(mensaje) {
     }
     _lotesYaSincronizados.add(lote.id);
 
-    /* Capa 2: consulta directa a Supabase (fuente de verdad) */
-    return sbFetch('pagos', 'select=id&lot_id=eq.' + lote.id + '&num_cuota=gt.0&limit=1')
+    /* FIX cuotas incompletas: antes se consultaba con limit=1 y con que
+       existiera UNA sola fila se asumía "ya está completo, no tocar".
+       Eso dejaba lotes con solo 2 o 3 cuotas de las 60 esperadas
+       (huérfanas de un DELETE fallido en una edición anterior) sin
+       posibilidad de autocompletarse nunca. Ahora se traen TODOS los
+       num_cuota existentes y se generan únicamente los que faltan. */
+    return sbFetch('pagos', 'select=num_cuota&lot_id=eq.' + lote.id + '&num_cuota=gt.0')
       .then(function(filas) {
-        if (filas && filas.length > 0) {
-          /* Ya existen cuotas — no tocar nada */
+        var existentes = new Set((filas || []).map(function(f){ return f.num_cuota; }));
+        var totalEsperado = parseInt(lote.mo) || 0;
+
+        if (totalEsperado > 0 && existentes.size >= totalEsperado) {
+          /* Ya están todas las cuotas esperadas — no tocar nada */
           return Promise.resolve();
         }
 
-        /* No hay cuotas → generarlas */
-        var cuotas = generarCuotasDeLote(lote);
-        if (!cuotas.length) return Promise.resolve();
+        var todas = generarCuotasDeLote(lote);
+        if (!todas.length) return Promise.resolve();
 
-        console.log('[Seguimiento] Generando cuotas iniciales para lote', lote.id, '—', cuotas.length, 'cuotas');
+        var faltantes = todas.filter(function(c){ return !existentes.has(c.num_cuota); });
+        if (!faltantes.length) return Promise.resolve();
+
+        console.log('[Seguimiento] Completando cuotas faltantes para lote', lote.id,
+          '—', faltantes.length, 'de', todas.length, '(ya existían', existentes.size + ')');
 
         /* Capa 3: ignoreDuplicates por si la constraint UNIQUE existe */
-        return sbInsert('pagos', cuotas, { ignoreDuplicates: true })
+        return sbInsert('pagos', faltantes, { ignoreDuplicates: true })
           .then(function(nuevas) {
             if (nuevas && nuevas.length) {
               _pagos = _pagos.concat(nuevas);
