@@ -200,6 +200,20 @@ function tgEnviar(mensaje) {
   function sbDelete(table, id) {
     return fetch(sbUrl() + '/rest/v1/' + table + '?id=eq.' + id, {
       method: 'DELETE', headers: sbHead()
+    }).then(function(r) {
+      /* FIX conteo de cuotas: antes esta función no revisaba r.ok,
+         así que un DELETE fallido (RLS, timeout, constraint, etc.)
+         se daba por "exitoso" en silencio. Eso dejaba cuotas viejas
+         huérfanas en la tabla, las cuales chocaban con la constraint
+         UNIQUE(lot_id, num_cuota) al insertar las cuotas nuevas y
+         hacían que el total de cuotas mostrado (47, 48, 49...) nunca
+         coincidiera con el número de cuotas real de la venta. */
+      if (!r.ok) {
+        return r.text().then(function(t) {
+          throw new Error('DELETE falló en ' + table + ' (id=' + id + '): ' + t);
+        });
+      }
+      return r;
     });
   }
 
@@ -1183,7 +1197,13 @@ function tgEnviar(mensaje) {
     var cuotas  = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota !== 0; })
                         .sort(function(a,b){ return a.num_cuota - b.num_cuota; });
     var pagadas  = cuotas.filter(function(p){ return p.pagado; }).length;
-    var totalC   = cuotas.length || parseInt(lote.mo) || 0;
+    /* FIX conteo de cuotas: lote.mo es el número de cuotas que quedó
+       registrado en la venta (la fuente de verdad). cuotas.length es
+       solo cuántas filas hay ahora mismo en _pagos, lo cual puede
+       quedar temporalmente desincronizado (regeneración en curso,
+       fila huérfana, etc.). Antes se priorizaba cuotas.length y por
+       eso el badge saltaba entre 47/48/49 en vez de mostrar 54 fijo. */
+    var totalC   = parseInt(lote.mo) || cuotas.length || 0;
     var pct      = totalC > 0 ? Math.round(pagadas / totalC * 100) : 0;
 
     var precio  = Number(lote.salePrice) || 0;
@@ -1254,7 +1274,8 @@ function tgEnviar(mensaje) {
         var cuotas  = _pagos.filter(function(p){ return p.lot_id === lote.id && p.num_cuota !== 0; })
                             .sort(function(a,b){ return a.num_cuota - b.num_cuota; });
         var pagadas  = cuotas.filter(function(p){ return p.pagado; }).length;
-        var totalC   = cuotas.length || parseInt(lote.mo) || 0;
+        /* FIX conteo de cuotas: ver misma nota en _acordeonLote arriba. */
+        var totalC   = parseInt(lote.mo) || cuotas.length || 0;
         var pct      = totalC > 0 ? Math.round(pagadas / totalC * 100) : 0;
         var precio   = Number(lote.salePrice) || 0;
         var dnPct    = Number(lote.dn) || 20;
