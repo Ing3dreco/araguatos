@@ -165,6 +165,43 @@ function tgEnviar(mensaje) {
     });
   }
 
+  /* FIX cuotas incompletas al desplegar: Supabase/PostgREST limita cada
+     respuesta a un máximo de filas (por defecto 1000 en la mayoría de
+     proyectos). sbFetch() traía TODA la tabla de un solo jalón sin
+     paginar, así que al crecer 'pagos' (muchos lotes × muchas cuotas)
+     la respuesta se cortaba en silencio y algunos lotes se quedaban
+     con solo 40 o 42 de sus 60 cuotas cargadas en memoria — el
+     encabezado se veía bien (usa lote.mo) pero la tabla desplegada no
+     (usa las filas realmente cargadas). sbFetchAll() pagina con el
+     header Range hasta traer todas las filas, sin importar cuántas. */
+  function sbFetchPagina(table, query, desde, hasta) {
+    return fetch(sbUrl() + '/rest/v1/' + table + '?' + (query || 'select=*'), {
+      headers: Object.assign({}, sbHead(), {
+        'Range-Unit': 'items',
+        'Range': desde + '-' + hasta
+      })
+    }).then(function(r) {
+      if (!r.ok && r.status !== 206) throw new Error('HTTP ' + r.status + ' en ' + table);
+      return r.json();
+    });
+  }
+
+  function sbFetchAll(table, query) {
+    var TAM_PAGINA = 1000;
+    var todas = [];
+    function siguiente(desde) {
+      return sbFetchPagina(table, query, desde, desde + TAM_PAGINA - 1).then(function(filas) {
+        filas = filas || [];
+        todas = todas.concat(filas);
+        if (filas.length < TAM_PAGINA) {
+          return todas; /* ya no hay más páginas */
+        }
+        return siguiente(desde + TAM_PAGINA);
+      });
+    }
+    return siguiente(0);
+  }
+
   /* FIX v10: sbInsert acepta options.ignoreDuplicates para añadir
      "resolution=ignore-duplicates" cuando la constraint UNIQUE existe. */
   function sbInsert(table, data, options) {
@@ -244,7 +281,7 @@ function tgEnviar(mensaje) {
     }
 
     Promise.all([
-      sbFetch('pagos',      'select=*&order=fecha_vence.asc'),
+      sbFetchAll('pagos',   'select=*&order=fecha_vence.asc'),
       sbFetch('prospectos', 'select=*&order=created_at.desc'),
       sbFetch('eventos',    'select=*&order=fecha.asc'),
       sbFetch('vendedores', 'select=*&order=nombre.asc')
