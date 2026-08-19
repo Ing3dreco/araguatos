@@ -1266,13 +1266,18 @@ function tgEnviar(mensaje) {
     var totalPagado = (dnPagado ? (ciRow ? Number(ciRow.monto) || dnAmt : dnAmt) : 0) +
       cuotas.reduce(function(s, p){ return s + (p.pagado ? (Number(p.monto) || 0) : 0); }, 0);
 
+    /* Faltante = precio total de la venta - lo efectivamente pagado.
+       Como precio ya incluye CI + todas las cuotas, esta resta cubre
+       tanto CI pendiente como cuotas pendientes/en mora. */
+    var totalFaltante = Math.max(0, precio - totalPagado);
+
     var enMoraLote   = cuotas.filter(function(p){ return !p.pagado && diffDias(p.fecha_vence) < 0; }).length;
     var proxVenceLote = cuotas.filter(function(p){ return !p.pagado && diffDias(p.fecha_vence) >= 0 && diffDias(p.fecha_vence) <= 7; }).length;
     var colorLote = enMoraLote > 0 ? '#c62828' : proxVenceLote > 0 ? '#e65100' : pct >= 100 ? '#2e7d32' : '#1565c0';
     var bgLote    = enMoraLote > 0 ? '#ffebee' : proxVenceLote > 0 ? '#fff3e0' : pct >= 100 ? '#e8f5e9' : '#e3f2fd';
     var iconoLote = enMoraLote > 0 ? '🔴' : proxVenceLote > 0 ? '🟡' : pct >= 100 ? '✅' : '🔵';
 
-    var cuerpo = abierto ? _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct, totalPagado) : '';
+    var cuerpo = abierto ? _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct, totalPagado, totalFaltante) : '';
 
     return '<div class="card" style="margin-bottom:10px;overflow:hidden" id="acord-'+lote.id+'">' +
       '<div onclick="window._segToggleAcordeon(\''+lote.id+'\')" ' +
@@ -1296,6 +1301,7 @@ function tgEnviar(mensaje) {
       '<div style="height:5px;background:'+colorLote+';border-radius:3px;width:'+pct+'%"></div></div>' +
       '<span style="font-size:11px;color:'+colorLote+';font-weight:700">'+pagadas+'/'+totalC+' cuotas · '+pct+'%</span>' +
       '<span style="font-size:11px;color:#2e7d32;font-weight:800">💰 '+fmtMonto(totalPagado)+' pagados</span>' +
+      '<span style="font-size:11px;color:#e65100;font-weight:800">⏳ '+fmtMonto(totalFaltante)+' faltan</span>' +
       (enMoraLote > 0 ? '<span style="font-size:10px;background:#ffebee;color:#c62828;padding:2px 7px;border-radius:10px;font-weight:700">'+enMoraLote+' en mora</span>' : '') +
       (proxVenceLote > 0 ? '<span style="font-size:10px;background:#fff3e0;color:#e65100;padding:2px 7px;border-radius:10px;font-weight:700">'+proxVenceLote+' vencen pronto</span>' : '') +
       '</div>' +
@@ -1339,7 +1345,8 @@ function tgEnviar(mensaje) {
         var dnPagado = ciRow ? ciRow.pagado : (lote.dnPagado || false);
         var totalPagado = (dnPagado ? (ciRow ? Number(ciRow.monto) || dnAmt : dnAmt) : 0) +
           cuotas.reduce(function(s, p){ return s + (p.pagado ? (Number(p.monto) || 0) : 0); }, 0);
-        body.innerHTML = _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct, totalPagado);
+        var totalFaltante = Math.max(0, precio - totalPagado);
+        body.innerHTML = _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct, totalPagado, totalFaltante);
       }
       body.style.display = 'block';
       var cabFl = card.querySelector('div[onclick] > div:first-child');
@@ -1363,7 +1370,7 @@ function tgEnviar(mensaje) {
     }
   };
 
-  function _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct, totalPagado) {
+  function _cuerpoLote(lote, cuotas, ciRow, dnAmt, dnPagado, pagadas, totalC, pct, totalPagado, totalFaltante) {
     var dnFecha = ciRow ? ciRow.fecha_pago : (lote.dnFecha || lote.saleDate || null);
     var dnNota  = ciRow ? ciRow.nota       : (lote.dnNota  || '');
     var precio  = Number(lote.salePrice) || 0;
@@ -1400,6 +1407,7 @@ function tgEnviar(mensaje) {
       '<div style="margin-left:auto;display:flex;gap:14px;align-items:center">' +
       '<div style="font-size:11px;font-weight:700;color:#2e7d32">'+pagadas+'/'+totalC+' pagadas</div>' +
       '<div style="font-size:12px;font-weight:800;color:#2e7d32;background:#e8f5e9;padding:4px 10px;border-radius:20px">💰 Total pagado: '+fmtMonto(totalPagado||0)+'</div>' +
+      '<div style="font-size:12px;font-weight:800;color:#e65100;background:#fff3e0;padding:4px 10px;border-radius:20px">⏳ Faltante: '+fmtMonto(totalFaltante||0)+'</div>' +
       '</div>' +
       '</div>';
 
