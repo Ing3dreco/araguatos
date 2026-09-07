@@ -103,19 +103,57 @@ var _editSaleId = null;
 function editSale(id) {
   var l=S.lots.find(function(x){ return x.id===id; }); if(!l) return;
   _editSaleId = id;
-  /* Reutilizamos saleMod */
+  /* Reutilizamos saleMod — mismos campos que el registro inicial (oSale en tab-venta.js) */
   G('smB').innerHTML=
     '<div class="al al-i" style="margin-bottom:12px">✏️ Editando venta — <b>Lote '+l.id+'</b> · '+fCOP(l.salePrice||lp(l))+'</div>'
+
+    +'<label class="fl">Género *</label>'
+    +'<select id="sm_gen">'
+    +'<option value=""'+(!l.gender?' selected':'')+'>— Seleccionar —</option>'
+    +'<option value="M"'+(l.gender==='M'?' selected':'')+'>Masculino — EL PROMITENTE COMPRADOR</option>'
+    +'<option value="F"'+(l.gender==='F'?' selected':'')+'>Femenino — LA PROMITENTE COMPRADORA</option>'
+    +'</select>'
+
     +'<label class="fl">Nombre completo *</label><input type="text" id="sm_b" value="'+(l.buyer||'')+'">'
     +'<label class="fl">Cédula / NIT *</label><input type="text" id="sm_cc" value="'+(l.cc||'')+'">'
-    +'<label class="fl">Teléfono *</label><input type="tel" id="sm_ph" value="'+(l.phone||'')+'">'
+
+    +'<label class="fl">Ciudad de expedición de la cédula *</label>'
+    +'<input type="text" id="sm_ccity" placeholder="Ej: Bogotá" value="'+(l.ccCity||'')+'">'
+
+    +'<label class="fl">Teléfono / Celular *</label><input type="tel" id="sm_ph" value="'+(l.phone||'')+'">'
     +'<label class="fl">Correo electrónico</label><input type="email" id="sm_em" value="'+(l.email||'')+'">'
+
+    +'<label class="fl">Estado civil</label>'
+    +'<select id="sm_mc">'
+    +'<option value=""'+(!l.marital?' selected':'')+'>— Seleccionar —</option>'
+    +'<option value="soltero/a"'+(l.marital==='soltero/a'?' selected':'')+'>Soltero/a</option>'
+    +'<option value="casado/a"'+(l.marital==='casado/a'?' selected':'')+'>Casado/a</option>'
+    +'<option value="unión libre"'+(l.marital==='unión libre'?' selected':'')+'>Unión libre</option>'
+    +'<option value="divorciado/a"'+(l.marital==='divorciado/a'?' selected':'')+'>Divorciado/a</option>'
+    +'<option value="viudo/a"'+(l.marital==='viudo/a'?' selected':'')+'>Viudo/a</option>'
+    +'</select>'
+
+    +'<label class="fl">Ciudad de domicilio</label>'
+    +'<input type="text" id="sm_city" placeholder="Ej: Florencia" value="'+(l.city||'')+'">'
+
     +'<label class="fl">Dirección</label><input type="text" id="sm_ad" value="'+(l.addr||'')+'">'
+
+    +'<label class="fl">Nacionalidad</label>'
+    +'<select id="sm_nat">'
+    +'<option value="colombiana"'+((!l.nationality||l.nationality==='colombiana')?' selected':'')+'>Colombiana</option>'
+    +'<option value="venezolana"'+(l.nationality==='venezolana'?' selected':'')+'>Venezolana</option>'
+    +'<option value="ecuatoriana"'+(l.nationality==='ecuatoriana'?' selected':'')+'>Ecuatoriana</option>'
+    +'<option value="peruana"'+(l.nationality==='peruana'?' selected':'')+'>Peruana</option>'
+    +'<option value="estadounidense"'+(l.nationality==='estadounidense'?' selected':'')+'>Estadounidense</option>'
+    +'<option value="otra"'+(l.nationality==='otra'?' selected':'')+'>Otra</option>'
+    +'</select>'
+
     +'<label class="fl">Estado</label>'
     +'<select id="sm_st">'
     +'<option value="apartado"'+(l.status==='apartado'?' selected':'')+'>Apartado</option>'
     +'<option value="sold"'+(l.status==='sold'?' selected':'')+'>Vendido</option>'
     +'</select>'
+
     +'<label class="fl">Precio de venta (M COP)</label>'
     +'<input type="number" id="sm_pr" value="'+(l.salePrice||lp(l))+'" min="0" max="500" step="0.5">'
     +'<label class="fl">Cuota inicial (M COP — 0 = sin cambio)</label>'
@@ -123,7 +161,10 @@ function editSale(id) {
     +'<label class="fl">Cuota mensual (M COP — 0 = sin cambio)</label>'
     +'<input type="number" id="sm_cm" value="'+(l.cmAmt||0)+'" min="0" max="100" step="0.1">'
     +'<label class="fl">Plazo (meses)</label>'
-    +'<input type="number" id="sm_mo" value="'+(l.mo||36)+'" min="1" max="60">'
+    +'<input type="number" id="sm_plazo" value="'+(l.mo||36)+'" min="1" max="60">'
+    +'<label class="fl">Mes del proyecto (0 = ahora)</label>'
+    +'<input type="number" id="sm_moidx" value="'+(l.saleMonthIdx||0)+'" min="0" max="60">'
+
     +'<label class="fl">Observaciones</label>'
     +'<input type="text" id="sm_ob" value="'+(l.obs||'')+'">';
   /* Cambiar botón confirm para que llame savEditSale */
@@ -136,15 +177,25 @@ function savEditSale() {
   var b=G('sm_b').value.trim(), cc=G('sm_cc').value.trim(), ph=G('sm_ph').value.trim();
   if(!b||!cc||!ph){ alert('Nombre, cédula y teléfono son obligatorios.'); return; }
   var l=S.lots.find(function(x){ return x.id===_editSaleId; }); if(!l) return;
+
   l.buyer  = b;       l.cc     = cc;   l.phone = ph;
   l.email  = G('sm_em').value;
   l.addr   = G('sm_ad').value;
+
+  l.gender      = G('sm_gen')   ? G('sm_gen').value          : l.gender;
+  l.ccCity      = G('sm_ccity') ? G('sm_ccity').value.trim() : l.ccCity;
+  l.marital     = G('sm_mc')    ? G('sm_mc').value           : l.marital;
+  l.city        = G('sm_city')  ? G('sm_city').value.trim()  : l.city;
+  l.nationality = G('sm_nat')   ? G('sm_nat').value          : l.nationality;
+
   l.status = G('sm_st').value;
   var pr=parseFloat(G('sm_pr').value); if(pr>0) l.salePrice=pr;
   var dn=parseFloat(G('sm_dn').value); if(dn>0) l.dnAmt=dn;
   var cm=parseFloat(G('sm_cm').value); if(cm>0) l.cmAmt=cm;
-  l.mo     = parseInt(G('sm_mo').value)||l.mo;
-  l.obs    = G('sm_ob').value;
+  l.mo           = parseInt(G('sm_plazo').value)||l.mo;
+  l.saleMonthIdx = parseInt(G('sm_moidx').value)||0;
+  l.obs          = G('sm_ob').value;
+
   _editSaleId=null;
   /* Restaurar botón confirm original */
   var confirmBtn=G('saleMod').querySelector('button.bg');
